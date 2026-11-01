@@ -28,6 +28,90 @@ States: `progress`, `dev-done`, `pass`, `fail`, `blocked`.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
+## Workflow
+
+A development task and its review are two tasks, worked by two sessions.
+
+```text
+USER                     DEV AGENT (session s-dev)          REVIEW AGENT (session s-rev)
+────                     ─────────────────────────           ────────────────────────────
+fs add  ──► t-dev
+         claim s-dev ───► holds t-dev, round 1
+                          report progress ──┐
+                          report dev-done ──┴─► (not complete)
+                                                    fs add --review-of t-dev ──► t-rev
+                                                                                 claim s-rev
+                                                                                 runs each declared check
+                                                                                 report pass+exit ──► fs done
+                                                                                                       │
+                                                                                 t-rev closed, then t-dev ┘
+
+anyone: fs status  (read-only; a session sees only its binding, the user sees every project)
+```
+
+```bash
+fs add    --project demo --goal "ship X" --check "go test ./..."   # → t-dev
+fs claim  --project demo --session s-dev --task t-dev              # binds + holds
+fs report --project demo --session s-dev --task t-dev --state progress --note "half done"
+fs report --project demo --session s-dev --task t-dev --state dev-done
+fs add    --project demo --goal "review t-dev" --review-of t-dev   # → t-rev, checks inherited
+fs claim  --project demo --session s-rev --task t-rev
+fs report --project demo --session s-rev --task t-rev --state pass --role review \
+          --command "go test ./..." --exit 0
+fs done   --project demo --session s-rev --task t-rev              # closes t-rev, then t-dev
+fs status --project demo            # user view;  --session s-dev gives the agent's own view
+```
+
+What each verb writes:
+
+| verb | rows written | notes |
+|---|---|---|
+| `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write |
+| `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
+| `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; this write is also the keepalive |
+| `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why |
+| `status` | nothing | derived from rows on every call |
+
+### Claim, the only intricate step
+
+```text
+0. read: does the task exist, is it closed?          (a read decides nothing)
+1. Put session:<sid>  ── duplicate? ─► REFUSE: session spent, nothing else written
+2. read rows; current round = the highest seen
+3. live by another session? ─► REFUSE, naming holder and expiry
+4. live by me? ─► success, it is already mine
+5. Put claim:<tid>:<round+1> ── duplicate? ─► another racer won; retry from 2, 3 attempts
+                             └─ inserted ─► I hold it
+```
+
+The winner is decided by memstore refusing a duplicate key, never by a comparison fs
+makes. The order is bind, then claim: a failure after step 1 burns the session and holds
+nothing, which is safe — the fix is a new session, not a retry.
+
+### The completion gate
+
+```text
+done on a development task                  → refused: a worker cannot complete its own work
+same session as the developer               → refused: a reviewer must be a different session
+the development task was never claimed      → refused: there is no developer to be independent from
+reviewed task already closed                → refused: a completed task is never reopened
+no review-role run of a declared check      → refused, and a fail event records why
+newest run of a check exits non-zero        → refused, naming the check and its exit
+all checks pass, run by this reviewer       → closes the review, then the development task
+```
+
+The gate matches the newest `role=review` event from this session with the exact declared
+command, so a reviewer that fixed and re-ran reports the rerun.
+
+### Liveness
+
+- A claim is live while some row by its session is newer than `now − 120s`. There is no
+  renew verb and no expired flag: `fs report` is the heartbeat.
+- A lapsed lease reads as `unknown` for the agent and `open` for the task, which frees it
+  for a new session. It never means done, and the old session may no longer write.
+- One session holds one task for life. A session bound to `t-dev` is refused on `t-rev`
+  before any write, even after `t-dev` completes: more work needs a new session id.
+
 ## Build and install
 
 ```bash
