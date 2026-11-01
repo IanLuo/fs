@@ -1,8 +1,8 @@
-<!-- specs:locked:5d9392e 2026-10-31 type=spec -->
+<!-- specs:locked:296db65 2026-11-01 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
-- **referrers** (must cite this when they change): AGENTS.md, skills/flagship/SKILL.md, .agents/specs/fs-rebuild-design.md
+- **referrers** (must cite this when they change): AGENTS.md, ../skills/skills/flagship/SKILL.md, .agents/specs/fs-rebuild-design.md
 
 # Spec — fs: shared task coordination for isolated agents
 ## R1 Problem & who breaks

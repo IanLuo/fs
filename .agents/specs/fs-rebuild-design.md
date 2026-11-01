@@ -1,8 +1,8 @@
-<!-- specs:locked:5d9392e 2026-10-31 type=system-design -->
+<!-- specs:locked:296db65 2026-11-01 type=system-design -->
 
 ## Link contract
 - **upstream** (this doc relies on): .agents/specs/fs-rebuild.md
-- **referrers** (must cite this when they change): AGENTS.md, skills/flagship/SKILL.md
+- **referrers** (must cite this when they change): AGENTS.md, ../skills/skills/flagship/SKILL.md
 
 # System design — fs coordination over shared memstore
 ## R1 Components & ownership
