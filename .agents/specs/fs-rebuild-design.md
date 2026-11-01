@@ -1,4 +1,4 @@
-<!-- specs:locked:d944a66 2026-11-01 type=system-design -->
+<!-- specs:locked:4f92a84 2026-11-01 type=system-design -->
 
 ## Link contract
 - **upstream** (this doc relies on): .agents/specs/fs-rebuild.md
@@ -31,6 +31,7 @@
 - **`fs.claim` exists to be refused for the same reason.** `claim:<tid>:<n>` is a key every racer computes identically, so exactly one insert wins and the loser is told by `ErrDuplicateOrigin`.
 - **Liveness is derived, never written.** A claim of round *n* is live while some row by its session is newer than `now − ttl_s`. There is no "expire" write, no cleanup job, and no flag two readers can disagree about.
 - **Status keeps the verdict and the fact.** A stale observation reports `state: unknown` — expiry is not evidence — while `reported` carries the state that observation last gave, beside `age_seconds`. Two fields because they are two facts: dropping `reported` makes a finished agent and a vanished one indistinguishable.
+- **A report is the record.** status returns every report a task carries, newest first and bounded, whatever role wrote it: a development report's note and digest are what a session taking over reads to find where the work stopped, and a review run is what closed it. Context does not survive a dead session; a report does, because the row outlives the process. No transcript exists, so none is reported.
 - **The keepalive is any write.** `fs report` is the heartbeat; there is no separate renew verb and no separate heartbeat row.
 - **Completion is terminal.** `fs done` closes the task row via `CloseMemory`; a closed task is never reopened. Re-work is a new task.
 - **Empty record refused before writing:** no goal, no project scope, no declared check, no session identity.
