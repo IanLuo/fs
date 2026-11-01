@@ -1,4 +1,4 @@
-<!-- specs:locked:296db65 2026-11-01 type=system-design -->
+<!-- specs:locked:d944a66 2026-11-01 type=system-design -->
 
 ## Link contract
 - **upstream** (this doc relies on): .agents/specs/fs-rebuild.md
@@ -21,6 +21,8 @@
 | kind | the row asserts | `origin_id` | `extra` |
 |---|---|---|---|
 | `fs.task` | this work exists | `task:<tid>` | goal, checks[], project_path, parent_dev, goal_hash |
+
+- **`project_path` is absolute.** A task's row records where its work runs, so `--path .` is resolved at write time: a relative path would be resolved against whoever reads it, and would name nothing.
 | `fs.bind` | this session is used up | `session:<sid>` | task, session |
 | `fs.claim` | this task is held at round N | `claim:<tid>:<n>` | task, session, round, ttl_s |
 | `fs.event` | something happened | `ev:<tid>:<sid>:<n>` | state, role, command, exit, digest, note |
@@ -28,6 +30,7 @@
 - **`fs.bind` exists to be refused.** It is written once per session, before any claim, so a second task for that session fails on memstore's own unique index. A session is spent by construction, not by remembering to check.
 - **`fs.claim` exists to be refused for the same reason.** `claim:<tid>:<n>` is a key every racer computes identically, so exactly one insert wins and the loser is told by `ErrDuplicateOrigin`.
 - **Liveness is derived, never written.** A claim of round *n* is live while some row by its session is newer than `now − ttl_s`. There is no "expire" write, no cleanup job, and no flag two readers can disagree about.
+- **Status keeps the verdict and the fact.** A stale observation reports `state: unknown` — expiry is not evidence — while `reported` carries the state that observation last gave, beside `age_seconds`. Two fields because they are two facts: dropping `reported` makes a finished agent and a vanished one indistinguishable.
 - **The keepalive is any write.** `fs report` is the heartbeat; there is no separate renew verb and no separate heartbeat row.
 - **Completion is terminal.** `fs done` closes the task row via `CloseMemory`; a closed task is never reopened. Re-work is a new task.
 - **Empty record refused before writing:** no goal, no project scope, no declared check, no session identity.

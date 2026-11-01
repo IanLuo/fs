@@ -1,4 +1,4 @@
-<!-- specs:locked:296db65 2026-11-01 type=spec -->
+<!-- specs:locked:d944a66 2026-11-01 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -28,7 +28,7 @@
   - Add no fs-owned schema, direct SQL, second store, local index or cache.
 - **Out:**
   - A cap, single coordinator lease, dispatch/close event ledger, fs-owned database, persistent cache, direct SQL into memstore, or alternate persistent source of coordination state.
-  - fs starting or managing agent processes in V1. The user or harness starts each agent; agents pull work through fs.
+  - fs starting or managing agent processes in V1. The user or harness starts each agent; agents pull work through fs. A coordinator or harness may dispatch a reviewer from the unheld review tasks fs shows, but fs itself starts nothing and remains the arbiter of completion.
   - A visual dashboard, web server, TUI, remote coordination service, accounts, multi-user authorization, containers/VMs, automatic task decomposition, and automatic task planning.
   - Migration, import, archival, deletion, or re-entry of the legacy `~/.fs/store.db`. That data is not part of the new fs.
   - Duplicating project state, project history or durable project knowledge that already comes from memstore.
@@ -49,7 +49,7 @@
 - **AC1 — task creation.** Given a valid project/repository scope and a non-empty goal, when the user creates a task with acceptance criteria, fs stores it through memstore and returns its identifier. An empty goal or missing scope is refused without creating a record.
 - **AC2 — exclusive claim.** Given one eligible task and two distinct sessions attempting to claim concurrently, exactly one claim succeeds. The other receives a clear already-claimed/no-eligible result. The decisive step is a single `Put` whose duplicate refusal is atomic inside memstore, not an fs read-then-write sequence.
 - **AC3 — one task per session.** Given session S bound to task A, when S attempts any task-affecting operation on task B, fs refuses before writing and identifies A as the existing binding. This remains true after A completes. A fresh session can claim B when eligible.
-- **AC4 — status queries.** Given coordination records in a project namespace, an agent can query only the task/project authorized by its binding; the user can query aggregate fs work. Results identify task state, bound session, agent-reported status, runtime-observed status, each status source and timestamp/freshness. An expired heartbeat is returned as unknown, never as live, idle or done.
+- **AC4 — status queries.** Given coordination records in a project namespace, an agent can query only the task/project authorized by its binding; the user can query aggregate fs work. Results identify task state, bound session, agent-reported status, runtime-observed status, each status source and timestamp/freshness. An expired heartbeat is returned as unknown, never as live, idle or done. A stale observation keeps both facts and keeps them distinct: the verdict is `unknown`, and the state that source last reported is still reported, beside its age.
 - **AC5 — fresh review.** Given a development task, its review is a distinct task with a distinct session identity and a separate worktree detached at the reviewed commit, which is discarded after review. The review input contains the contract, diff and required bounded evidence; it does not contain the developer transcript or developer conclusion. The reviewer runs required checks independently.
 - **AC6 — evidence-gated completion.** Given a development result, when completion is requested, a missing reviewer, missing required check, or non-zero check result leaves the task incomplete. The record includes the exact command and exit result for every required check. A worker's self-reported completion alone is insufficient.
 - **AC7 — lease expiry and recovery.** Heartbeat interval is 30 seconds and a lease expires after 120 seconds without renewal. Given an expired lease, a new session may claim the still-incomplete task; the prior session may no longer write. Expiry never marks work complete. Attempt history remains available through memstore.
@@ -91,6 +91,7 @@
 ## R8 Data requirements
 - **Inputs:** project/repository scope; task goal; acceptance criteria; required check commands; harness-provided session identity; memstore's fs namespace; agent status and heartbeat updates; development diff and bounded evidence for review.
 - **Coordination data fs may store:** task identity and assignment; task type (development/review); project scope; bound session identity; task/agent status with source and timestamp; lease/heartbeat and attempt information; related development/review task references; required checks and exact results; bounded/redacted evidence necessary to determine whether completion criteria passed.
+- **Locations are absolute.** Where a task's work runs is recorded as an absolute path when the task is written. A relative path records no location: it means whatever directory the reader happens to be in.
 - **Project data:** project state, history and durable project knowledge are retrieved from memstore and are not copied into fs-owned state.
 - **Outputs:** task identifier; claim/refusal result; status-query result; progress/evidence record; independent review/check result; completion only after required checks pass.
 - **Must survive:** task and review records; assignment/attempt history; status provenance; successful and failed check results needed to explain completion or refusal. All are stored through memstore's supported API.
@@ -120,7 +121,7 @@
 - **AC1:** fs integration test with valid, empty-goal and missing-scope cases; assert the invalid cases create no memstore record.
 - **AC2:** memstore API barrier test using concurrent processes against one task; exactly one succeeds. Repeat under race detector and after process restart.
 - **AC3:** fs integration test binds session S to A, attempts every task-affecting operation on B, and proves refusal plus byte/state equivalence for both records. Prove a fresh session can claim B after eligibility.
-- **AC4:** status-query tests for authorized project, unauthorized project, aggregate user query, missing heartbeat and expired heartbeat; assert status source/timestamp and no false live/done state.
+- **AC4:** status-query tests for authorized project, unauthorized project, aggregate user query, missing heartbeat and expired heartbeat; assert status source/timestamp and no false live/done state, and that an expired heartbeat still reports the state it last reported, with its age, while its verdict is unknown.
 - **AC5:** harness integration test starts development and review in distinct fresh sessions/worktrees; assert the review worktree is detached at the reviewed commit and is removed afterwards; inspect the actual review input to prove it contains contract/diff/evidence and excludes developer transcript/conclusion. Do not claim this proves hidden context content beyond the harness boundary.
 - **AC6:** tests for no reviewer, missing check, failing check, and passing independently run check. Only the passing case permits completion; exact command and exit result are stored.
 - **AC7:** fake-clock or controlled-time lease tests at 30s heartbeat and 120s expiry; old session refusal after reassignment; expiry never marks done; attempt history preserved.
