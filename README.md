@@ -24,6 +24,9 @@ fs done   --project P --session S --task TID [--note TEXT]
 fs status [--project P] [--session S] [--format json|table]
 ```
 
+`--path` is resolved when the task is written, so `--path .` records the directory you ran
+it from, not a dot that means whatever directory the reader stands in.
+
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
@@ -135,7 +138,10 @@ demo
 - `LEASE` is what the holder has left before it must write again; `lapsed` frees the task for
   a new session and never means done.
 - `AGENT` is the holder's last reported state, `unknown` when that report is older than the
-  lease. Absence is not health.
+  lease. Absence is not health. A stale report is shown with a `~`, e.g. `dev-done~`: the
+  verdict is unknown, and the state shown is what the agent last said, so a finished agent
+  and a vanished one are not conflated. The JSON carries both as `agent.state` and
+  `agent.reported`, with `agent.age_seconds`.
 - Projects with no tasks are folded into one line: a scope keeps its name for as long as it
   holds any `fs:` row, so empty projects say nothing about current work. The JSON view still
   carries every project, including `"tasks": []`.
