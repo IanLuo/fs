@@ -183,14 +183,12 @@ func statusOf(task Task, ix *memory.Index, now time.Time) TaskStatus {
 	events := eventsFor(ix, task.Tid, now)
 	st.Agent = observed(events, "dev", "review")
 	st.Runtime = observed(events, "runtime")
-	// A review's evidence is every run it recorded, plus any verdict it wrote —
-	// including a refusal, which carries no command but is the reason the task is
-	// still open.
-	for _, ev := range events {
-		if ev.Role == "review" {
-			st.Evidence = append(st.Evidence, ev)
-		}
-	}
+	// Every report the task carries, whatever role wrote it. A development report
+	// is what says where the work stopped — the note and digest are the only
+	// record a resuming session has of the reasoning that did not survive — and a
+	// review's is the run that closed it, or the reason it stayed open. Newest
+	// first, bounded by eventsFor: status carries reports, never a transcript.
+	st.Evidence = events
 	return st
 }
 

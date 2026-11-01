@@ -175,6 +175,38 @@ func TestStatusShowsDoneAndEvidence(t *testing.T) {
 	}
 }
 
+// TestStatusCarriesTheDevelopmentReport: when a session dies its context is gone,
+// so the next session reads what it left. The note and digest are the only record
+// of where the work stopped, and they have to be in status, newest first, with the
+// session that wrote them.
+func TestStatusCarriesTheDevelopmentReport(t *testing.T) {
+	s, _ := open(t)
+	task := add(t, s, "p")
+	claim(t, s, "p", "s-dev", task.Tid)
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: task.Tid, State: "progress",
+		Note: "ast.rs next", Digest: "1 test red: TestParseUnary"})
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: task.Tid, State: "dev-done",
+		Note: "parser wired", Digest: "all green"})
+
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := st.Projects[0].Tasks[0].Evidence
+	if len(ev) != 2 {
+		t.Fatalf("evidence = %+v, want both development reports", ev)
+	}
+	if ev[0].State != "dev-done" || ev[0].Note != "parser wired" || ev[0].Digest != "all green" {
+		t.Errorf("newest report = %+v, want the stopping point", ev[0])
+	}
+	if ev[1].Note != "ast.rs next" || ev[1].Digest != "1 test red: TestParseUnary" {
+		t.Errorf("earlier report = %+v, want the progress one", ev[1])
+	}
+	if ev[0].Role != "dev" || ev[0].Session != "s-dev" {
+		t.Errorf("provenance = %+v, want the development role and the session that wrote it", ev[0])
+	}
+}
+
 // TestStatusIsStableAcrossRuns: two identical questions get byte-identical answers,
 // so a reader can diff them.
 func TestStatusIsStableAcrossRuns(t *testing.T) {
