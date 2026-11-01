@@ -1,6 +1,7 @@
 package coord_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,6 +29,30 @@ func TestAddRecordsATask(t *testing.T) {
 	rs := rows(t, s, "p")
 	if countKind(rs, memory.KindTask) != 1 {
 		t.Fatalf("task rows = %d, want 1", countKind(rs, memory.KindTask))
+	}
+}
+
+// TestAddRecordsAnAbsolutePath: a task records where its work runs, so a reader
+// standing anywhere can use it. `.` records nothing — it means whatever directory
+// the reader happens to be in — so the path is resolved when the task is written.
+func TestAddRecordsAnAbsolutePath(t *testing.T) {
+	s, _ := open(t)
+	task, err := coord.Add(s, coord.AddInput{
+		Project: "p", Goal: "g", Checks: []string{"true"}, Path: ".",
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !filepath.IsAbs(task.ProjectPath) || task.ProjectPath == "." {
+		t.Fatalf("project_path = %q, want the absolute directory, not a dot", task.ProjectPath)
+	}
+	// No path stays no path: an empty field is not invented.
+	bare, err := coord.Add(s, coord.AddInput{Project: "p", Goal: "g2", Checks: []string{"true"}})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if bare.ProjectPath != "" {
+		t.Fatalf("project_path = %q, want empty when no path was given", bare.ProjectPath)
 	}
 }
 

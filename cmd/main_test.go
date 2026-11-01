@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/flagship-dev/flagship/internal/coord"
 )
 
 // invoke runs one command line against a scratch memstore and returns its exit
@@ -170,6 +173,33 @@ func TestColumnsKeepWhatDistinguishes(t *testing.T) {
 	}
 	if got := oneLine("two\nlines\there"); got != "two lines here" {
 		t.Errorf("oneLine = %q, want one line", got)
+	}
+}
+
+// TestStatusTableMarksAStaleReport: an old report still says what last happened,
+// with one mark and one legend line, rather than collapsing to "unknown" and
+// erasing the difference between an agent that finished and one that vanished.
+func TestStatusTableMarksAStaleReport(t *testing.T) {
+	age, at := 3600.0, time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	report := coord.StatusReport{Projects: []coord.ProjectStatus{{
+		Project: "p",
+		Tasks: []coord.TaskStatus{{
+			Task: "t-1", Kind: "dev", State: "open", Session: "s-1", Round: 1,
+			Goal:  "ship it",
+			Agent: coord.Observed{State: "unknown", Reported: "dev-done", Fresh: false, Age: &age, At: &at},
+		}},
+	}}}
+	got := renderStatus(report, at)
+	if !strings.Contains(got, "dev-done~") {
+		t.Errorf("table lost the last reported state:\n%s", got)
+	}
+	if !strings.Contains(got, "~ reported longer ago than the lease") {
+		t.Errorf("table shows a mark with no legend:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "t-1") && strings.Contains(line, "unknown") {
+			t.Errorf("the row shows the verdict instead of the report:\n%s", line)
+		}
 	}
 }
 

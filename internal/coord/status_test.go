@@ -69,6 +69,11 @@ func TestExpiredHeartbeatIsUnknown(t *testing.T) {
 	if got.Agent.At == nil || got.Agent.Age == nil {
 		t.Fatal("the expired observation lost its timestamp; staleness must stay visible")
 	}
+	// The verdict is unknown, but the fact it was computed from survives: otherwise a
+	// finished agent and a vanished one look identical.
+	if got.Agent.Reported != "pass" {
+		t.Fatalf("reported = %q, want the last state reported (pass)", got.Agent.Reported)
+	}
 }
 
 // TestExpiredRuntimeIsUnknown: a harness report that stopped is unknown too.

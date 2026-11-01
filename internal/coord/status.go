@@ -21,17 +21,22 @@ type StatusInput struct {
 
 // Observed is one status as its source reported it, with how stale it is.
 //
-// A stale observation is reported as unknown. Expiry never reads as live, idle or
-// done: an agent that stopped writing is an agent whose state nobody knows, and
-// saying otherwise invents a fact the evidence does not carry.
+// Two fields carry two different facts, and keeping them apart is the point.
+// `state` is the verdict: a stale observation reads as unknown, because expiry
+// never means live, idle or done — an agent that stopped writing is an agent whose
+// state nobody knows, and saying otherwise invents a fact the evidence does not
+// carry. `reported` is the fact the verdict was computed from: what that source
+// last said, however long ago, with `age_seconds` beside it. Dropping it would
+// erase the difference between an agent that finished and one that vanished.
 type Observed struct {
-	State   string     `json:"state"`
-	Session string     `json:"session,omitempty"`
-	Role    string     `json:"role,omitempty"`
-	Source  string     `json:"source"`
-	At      *time.Time `json:"at,omitempty"`
-	Age     *float64   `json:"age_seconds,omitempty"`
-	Fresh   bool       `json:"fresh"`
+	State    string     `json:"state"`
+	Reported string     `json:"reported,omitempty"`
+	Session  string     `json:"session,omitempty"`
+	Role     string     `json:"role,omitempty"`
+	Source   string     `json:"source"`
+	At       *time.Time `json:"at,omitempty"`
+	Age      *float64   `json:"age_seconds,omitempty"`
+	Fresh    bool       `json:"fresh"`
 }
 
 // TaskStatus is one task with everything a reader needs to act on it.
@@ -206,7 +211,7 @@ func observed(events []Evidence, roles ...string) Observed {
 		}
 		fresh := ev.Age != nil && *ev.Age <= memory.DefaultTTL.Seconds()
 		out := Observed{
-			State: ev.State, Session: ev.Session, Role: ev.Role,
+			State: ev.State, Reported: ev.State, Session: ev.Session, Role: ev.Role,
 			Source: "fs.event", At: ev.At, Age: ev.Age, Fresh: fresh,
 		}
 		if !fresh {

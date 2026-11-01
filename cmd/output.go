@@ -89,11 +89,14 @@ const (
 // rendering state, and nothing stored.
 func renderStatus(r coord.StatusReport, now time.Time) string {
 	var b strings.Builder
-	tasks, byState := 0, map[string]int{}
+	tasks, byState, stale := 0, map[string]int{}, false
 	for _, p := range r.Projects {
 		tasks += len(p.Tasks)
 		for _, t := range p.Tasks {
 			byState[t.State]++
+			if t.Agent.Reported != "" && !t.Agent.Fresh {
+				stale = true
+			}
 		}
 	}
 	fmt.Fprintf(&b, "%s, %s", plural(len(r.Projects), "project"), plural(tasks, "task"))
@@ -120,9 +123,15 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 				colHold, tail(holder(t), colHold),
 				colRound, cell(round(t), colRound),
 				colLease, cell(lease(t, now), colLease),
-				colAgent, cell(t.Agent.State, colAgent),
+				colAgent, cell(agentCell(t.Agent), colAgent),
 				cell(oneLine(t.Goal), colGoal))
 		}
+	}
+
+	// A report older than the lease keeps its two facts: the verdict is unknown, and
+	// the state that verdict was computed from is still shown, marked once here.
+	if stale {
+		b.WriteString("\n~ reported longer ago than the lease: the verdict is unknown, the state shown is the last report\n")
 	}
 
 	// A scope keeps a name for as long as it holds any fs: row, including the
@@ -148,6 +157,20 @@ func holder(t coord.TaskStatus) string {
 		return "-"
 	}
 	return t.Session
+}
+
+// agentCell is what the holder last reported, with a tilde when that report is
+// older than the lease. The verdict for such a report is unknown; the state it was
+// computed from is still the most useful thing on the line, and the tilde is
+// explained once under the table.
+func agentCell(o coord.Observed) string {
+	if o.Reported == "" {
+		return o.State
+	}
+	if o.Fresh {
+		return o.Reported
+	}
+	return o.Reported + "~"
 }
 
 // round is the claim attempt that holds the task. It is how a reader tells two

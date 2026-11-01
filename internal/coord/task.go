@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -113,6 +114,11 @@ func Add(s *memory.Store, in AddInput) (Task, error) {
 		}
 	}
 
+	path, err := cleanPath(in.Path)
+	if err != nil {
+		return Task{}, err
+	}
+
 	checks, err := cleanChecks(in.Checks)
 	if err != nil {
 		return Task{}, err
@@ -129,7 +135,7 @@ func Add(s *memory.Store, in AddInput) (Task, error) {
 		Kind:        KindDev,
 		Goal:        goal,
 		Checks:      checks,
-		ProjectPath: strings.TrimSpace(in.Path),
+		ProjectPath: path,
 		ParentDev:   parent.Tid,
 		GoalHash:    hash(goal),
 	}
@@ -151,6 +157,21 @@ func Add(s *memory.Store, in AddInput) (Task, error) {
 	}
 	task.at = s.Now()
 	return task, nil
+}
+
+// cleanPath records where a task's work runs as a path any reader can use. A
+// relative path is resolved against whoever happened to run the command, so `.`
+// records nothing at all: name the directory once, absolutely, at write time.
+func cleanPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("path %q cannot be resolved: %w", path, err)
+	}
+	return abs, nil
 }
 
 // cleanChecks trims the declared checks and refuses an entry that is not one, so
