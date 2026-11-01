@@ -146,6 +146,24 @@ demo
   holds any `fs:` row, so empty projects say nothing about current work. The JSON view still
   carries every project, including `"tasks": []`.
 
+### Picking up a task whose session died
+
+The agent's context is gone and fs keeps no transcript, so a new session resumes from records.
+`evidence` in the JSON is every report the task carries, newest first, bounded at 20: `role`,
+`state`, `session`, `age_seconds`, `note`, `digest`, and for a check run the exact `command`
+and `exit`. A development report is what says where the work stopped.
+
+```bash
+fs status --project P --format table            # LEASE lapsed, AGENT progress~ / dev-done~
+fs claim  --project P --session s-take --task T # round+1; reuse this id if you retry
+fs status --project P | jq -r '.data.projects[].tasks[] | select(.task=="T") | .evidence[0]'
+# then read the work: git status, git log, git diff — and run the declared checks
+fs report --project P --session s-take --task T --state progress --note "…" --digest "…"
+```
+
+The last line is not bookkeeping: it is the keepalive, and it is the only thing the next
+session will have if this one dies too.
+
 ## Build and install
 
 ```bash
