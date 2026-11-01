@@ -42,10 +42,12 @@ var helpBlocks = []struct{ name, block string }{
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check and each
                                      one passed.`},
-	{"status", `  fs status [--project P] [--session S]
+	{"status", `  fs status [--project P] [--session S] [--format json|table]
                                      What fs knows. A session sees only what its
                                      binding authorizes; the user sees every
-                                     project.`},
+                                     project. --format table lays the same report
+                                     out for a human; the default is the JSON
+                                     envelope.`},
 }
 
 // usageNotes hold for every verb, so they close the full usage instead of
@@ -244,13 +246,19 @@ func doneCmd(args []string) (any, error) {
 	return coord.Done(s, coord.DoneInput{Project: *project, Session: *session, Task: *task, Note: *note})
 }
 
-// statusCmd answers what fs knows, from rows alone.
+// statusCmd answers what fs knows, from rows alone. The default answer is the JSON
+// envelope every other verb prints; --format table is the same answer laid out for
+// a human, so nobody has to read JSON to see who is on what.
 func statusCmd(args []string) (any, error) {
 	fs := newFlags("status")
 	project := fs.String("project", "", "one project; omit for every project")
 	session := fs.String("session", "", "this agent session's stable identity")
+	format := fs.String("format", "json", "json, or table for a human-readable view")
 	if err := parse(fs, args); err != nil {
 		return nil, err
+	}
+	if *format != "json" && *format != "table" {
+		return nil, usageErr{fmt.Sprintf("status: unknown format %q: one of json, table", *format)}
 	}
 
 	s, err := openStore()
@@ -259,7 +267,14 @@ func statusCmd(args []string) (any, error) {
 	}
 	defer s.Close()
 
-	return coord.Status(s, coord.StatusInput{Project: *project, Session: *session})
+	report, err := coord.Status(s, coord.StatusInput{Project: *project, Session: *session})
+	if err != nil {
+		return nil, err
+	}
+	if *format == "table" {
+		return tableOutput(renderStatus(report, s.Now())), nil
+	}
+	return report, nil
 }
 
 // openStore opens the shared memstore file. A store that cannot be opened is a

@@ -21,7 +21,7 @@ fs claim  --project P --session S [--task TID]
 fs report --project P --session S --task TID --state S [--role dev|review|runtime]
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
-fs status [--project P] [--session S]
+fs status [--project P] [--session S] [--format json|table]
 ```
 
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`.
@@ -111,6 +111,34 @@ command, so a reviewer that fixed and re-ran reports the rerun.
   for a new session. It never means done, and the old session may no longer write.
 - One session holds one task for life. A session bound to `t-dev` is refused on `t-rev`
   before any write, even after `t-dev` completes: more work needs a new session id.
+
+### Reading it as a human
+
+The default answer of `status` is the JSON envelope every verb prints. `--format table`
+lays the same report out to read, from the same single read — no second query, no stored
+view:
+
+```text
+$ fs status --format table
+2 projects, 3 tasks · 2 open · 1 claimed
+
+demo
+  TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      GOAL
+  t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   add lease-expiry tests
+  t-f64fa63ac1ddac3e  dev     open     -                 -      -         unknown    a goal long enough to be cut off…
+
+3 projects with no tasks: 3d-house, ann, cap
+```
+
+- `HOLDER`/`ROUND` are who holds the task and which claim attempt that is; `-` means nobody
+  holds it.
+- `LEASE` is what the holder has left before it must write again; `lapsed` frees the task for
+  a new session and never means done.
+- `AGENT` is the holder's last reported state, `unknown` when that report is older than the
+  lease. Absence is not health.
+- Projects with no tasks are folded into one line: a scope keeps its name for as long as it
+  holds any `fs:` row, so empty projects say nothing about current work. The JSON view still
+  carries every project, including `"tasks": []`.
 
 ## Build and install
 

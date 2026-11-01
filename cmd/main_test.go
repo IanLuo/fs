@@ -106,6 +106,73 @@ func TestHelpFlagIsNotStolenFromAValue(t *testing.T) {
 	}
 }
 
+// TestStatusTableIsForHumans: --format table renders the same report for a human —
+// no JSON, no second read — while the default stays the envelope a script parses.
+func TestStatusTableIsForHumans(t *testing.T) {
+	scratch(t)
+	tid, _ := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "go test ./...")["task"].(string)
+	mustOK(t, "claim", "--project", "p", "--session", "s-1", "--task", tid)
+	mustOK(t, "report", "--project", "p", "--session", "s-1", "--task", tid, "--state", "progress")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"status", "--format", "table"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0: %s", code, stderr.String())
+	}
+	got := stdout.String()
+	if strings.Contains(got, `"ok"`) {
+		t.Errorf("--format table printed JSON:\n%s", got)
+	}
+	for _, want := range []string{"1 project, 1 task", "TASK", "p", tid, "claimed", "s-1", "ship it"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("table is missing %q:\n%s", want, got)
+		}
+	}
+
+	// The default answer is unchanged: the envelope every other verb prints.
+	code, env := invoke(t, "status")
+	if code != 0 || env["ok"] != true {
+		t.Fatalf("default status = %d %v, want the JSON envelope", code, env)
+	}
+	if data, _ := env["data"].(map[string]any); data == nil || data["projects"] == nil {
+		t.Fatalf("default status is not the JSON report: %v", env)
+	}
+
+	// A format fs does not have is a malformed command line, not a refusal.
+	if code, _ := invoke(t, "status", "--format", "yaml"); code != 2 {
+		t.Errorf("unknown format: exit %d, want 2", code)
+	}
+}
+
+// TestStatusTableOnAnEmptyStore: a human asking about nothing gets a sentence,
+// not a blank screen.
+func TestStatusTableOnAnEmptyStore(t *testing.T) {
+	scratch(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"status", "--format", "table"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	if got := stdout.String(); !strings.Contains(got, "0 projects, 0 tasks") {
+		t.Fatalf("empty table = %q", got)
+	}
+}
+
+// TestColumnsKeepWhatDistinguishes: a session name leads with when it started, so
+// a cut must keep its tail; a goal is prose, so its cut is at the end.
+func TestColumnsKeepWhatDistinguishes(t *testing.T) {
+	if got := tail("pi-2026-11-01-observe-5a2", 16); got != "…-01-observe-5a2" {
+		t.Errorf("tail = %q, want the distinguishing end", got)
+	}
+	if got := tail("short", 16); got != "short" {
+		t.Errorf("tail = %q, want short unchanged", got)
+	}
+	if got := cell("a goal long enough to be cut", 10); got != "a goal lo…" {
+		t.Errorf("cell = %q, want the head plus an ellipsis", got)
+	}
+	if got := oneLine("two\nlines\there"); got != "two lines here" {
+		t.Errorf("oneLine = %q, want one line", got)
+	}
+}
+
 // TestUsageExitsTwo: a malformed command line is a different answer from a refusal,
 // and a script can tell them apart by the exit code alone.
 func TestUsageExitsTwo(t *testing.T) {
