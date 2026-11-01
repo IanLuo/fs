@@ -23,6 +23,13 @@ type usageErr struct{ msg string }
 
 func (e usageErr) Error() string { return e.msg }
 
+// helpErr is a verb asked to describe itself: `fs <verb> --help`. It is not a
+// refusal — the caller asked a question and fs answers it — so it exits 0.
+// A wrapper that reads the exit code must not see help as a failure.
+type helpErr struct{ verb string }
+
+func (e helpErr) Error() string { return e.verb + ": help requested" }
+
 // emit prints the envelope and returns the exit code: 0 for a result, 2 for a
 // malformed command line, 1 for everything else. Every failure path is a
 // refusal — there is no fallback store, no cached answer, and no partial success.
@@ -34,7 +41,7 @@ func emit(stdout, stderr io.Writer, data any, err error, usage string) int {
 	var u usageErr
 	if errors.As(err, &u) {
 		if usage != "" {
-			fmt.Fprintln(stderr, usage)
+			fmt.Fprint(stderr, usage)
 		}
 		write(stdout, envelope{OK: false, Error: err.Error()})
 		return 2

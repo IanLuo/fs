@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,37 +16,67 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/flagship-dev/flagship/internal/coord"
 	"github.com/flagship-dev/flagship/internal/logging"
 	"github.com/flagship-dev/flagship/internal/memory"
 )
 
-// usageText is the whole interface. Five verbs: add, claim, report, done, status.
-const usageText = `Usage: fs <command> [flags]
-
-  fs add    --project P --goal G --check C [--check C]... [--path DIR]
+// helpBlocks is one entry per verb (add, claim, report, done, status) and the only
+// copy of that verb's flags. The full usage and `fs <verb> --help` both print these
+// blocks, so a flag cannot be described in one place and forgotten in the other.
+var helpBlocks = []struct{ name, block string }{
+	{"add", `  fs add    --project P --goal G --check C [--check C]... [--path DIR]
             [--review-of TID]        Record a task. A review task names the
                                      development task it reviews and runs that
-                                     task's declared checks.
-  fs claim  --project P --session S [--task TID]
+                                     task's declared checks.`},
+	{"claim", `  fs claim  --project P --session S [--task TID]
                                      Bind this session to one task and hold it.
-                                     Without --task, the oldest eligible task.
-  fs report --project P --session S --task TID --state S
+                                     Without --task, the oldest eligible task.`},
+	{"report", `  fs report --project P --session S --task TID --state S
             [--role dev|review|runtime] [--command C --exit N]
             [--digest D] [--note TEXT]   Record a report. This is also the
-                                     keepalive: there is no renew verb.
-  fs done   --project P --session S --task TID [--note TEXT]
+                                     keepalive: there is no renew verb.`},
+	{"done", `  fs done   --project P --session S --task TID [--note TEXT]
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check and each
-                                     one passed.
-  fs status [--project P] [--session S]
+                                     one passed.`},
+	{"status", `  fs status [--project P] [--session S]
                                      What fs knows. A session sees only what its
                                      binding authorizes; the user sees every
-                                     project.
+                                     project.`},
+}
 
-States: progress, dev-done, pass, fail, blocked.
-The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.`
+// usageNotes hold for every verb, so they close the full usage instead of
+// repeating inside each verb's own help.
+const usageNotes = `States: progress, dev-done, pass, fail, blocked.
+The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
+`
+
+// usageText is the whole interface: five verbs and nothing else.
+func usageText() string {
+	var b strings.Builder
+	b.WriteString("Usage: fs <command> [flags]\n\n")
+	for _, v := range helpBlocks {
+		b.WriteString(v.block)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(usageNotes)
+	return b.String()
+}
+
+// verbBlock is one verb's help. It is the same block the full usage prints, so the
+// two cannot drift apart.
+func verbBlock(verb string) (string, bool) {
+	for _, v := range helpBlocks {
+		if v.name == verb {
+			return v.block + "\n", true
+		}
+	}
+	return "", false
+}
 
 // logger is the running log: JSON to stderr, teed to a rotating file. It records
 // ids and outcomes only, and never gates a decision. It is discarded until main
@@ -64,12 +95,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	level, err := logging.ResolveLevel(os.Getenv("FS_LOG_LEVEL"), verbose)
 	if err != nil {
-		return emit(stdout, stderr, nil, usageErr{err.Error()}, usageText)
+		return emit(stdout, stderr, nil, usageErr{err.Error()}, usageText())
 	}
 	logger = logging.NewLogger(logDir(), level)
 
 	if len(args) == 0 {
-		return emit(stdout, stderr, nil, usageErr{"no command given"}, usageText)
+		return emit(stdout, stderr, nil, usageErr{"no command given"}, usageText())
 	}
 	verb, rest := args[0], args[1:]
 
@@ -86,12 +117,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "status":
 		data, err = statusCmd(rest)
 	case "help", "-h", "--help":
-		return emit(stdout, stderr, nil, usageErr{"fs <add|claim|report|done|status> [flags]"}, usageText)
+		// Help is an answer, not a refusal: the whole interface, exit 0.
+		fmt.Fprint(stdout, usageText())
+		return 0
 	default:
-		return emit(stdout, stderr, nil, usageErr{fmt.Sprintf("unknown command %q", verb)}, usageText)
+		return emit(stdout, stderr, nil, usageErr{fmt.Sprintf("unknown command %q", verb)}, usageText())
 	}
 
-	code := emit(stdout, stderr, data, err, usageText)
+	// A verb asking to be described (`fs add --help`) is answered, not refused.
+	var asked helpErr
+	if errors.As(err, &asked) {
+		if block, ok := verbBlock(asked.verb); ok {
+			fmt.Fprint(stdout, block)
+			return 0
+		}
+	}
+
+	code := emit(stdout, stderr, data, err, usageText())
 	if err != nil {
 		logger.Warn("command refused", "verb", verb, "reason", err.Error())
 		return code
@@ -235,9 +277,13 @@ func newFlags(name string) *flag.FlagSet {
 	return fs
 }
 
-// parse runs the flag set and turns flag's error into a usage refusal.
+// parse runs the flag set and turns flag's error into a usage refusal. `--help`
+// is not a refusal: flag reports it as ErrHelp, and the verb answers it.
 func parse(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return helpErr{fs.Name()}
+		}
 		return usageErr{fs.Name() + ": " + err.Error()}
 	}
 	if fs.NArg() > 0 {

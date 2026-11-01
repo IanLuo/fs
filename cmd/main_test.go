@@ -46,6 +46,66 @@ func okData(t *testing.T, code int, env map[string]any) map[string]any {
 	return data
 }
 
+// TestHelpExitsZero: help is an answer, not a refusal. A wrapper that reads the
+// exit code must not see a help call as a failed command, and a verb's own help
+// must describe that verb rather than the whole interface.
+func TestHelpExitsZero(t *testing.T) {
+	scratch(t)
+	verbs := []string{"add", "claim", "report", "done", "status"}
+
+	// Top-level help names every verb and describes none of them alone.
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("fs %v: exit %d, want 0", args, code)
+		}
+		for _, verb := range verbs {
+			if !strings.Contains(stdout.String(), "fs "+verb) {
+				t.Errorf("fs %v does not mention %q:\n%s", args, verb, stdout.String())
+			}
+		}
+	}
+
+	// Per-verb help names its own verb and no other.
+	for _, verb := range verbs {
+		for _, help := range []string{"--help", "-h"} {
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{verb, help}, &stdout, &stderr); code != 0 {
+				t.Fatalf("fs %s %s: exit %d, want 0", verb, help, code)
+			}
+			got := stdout.String()
+			if !strings.Contains(got, "fs "+verb) {
+				t.Errorf("fs %s %s does not describe %s:\n%s", verb, help, verb, got)
+			}
+			for _, other := range verbs {
+				if other != verb && strings.Contains(got, "fs "+other) {
+					t.Errorf("fs %s %s also describes %s:\n%s", verb, help, other, got)
+				}
+			}
+		}
+	}
+
+	// Help answers even after a real flag, and writes nothing.
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"add", "--project", "p", "--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("fs add --project p --help: exit %d, want 0", code)
+	}
+	code, env := invoke(t, "status")
+	if projects, _ := okData(t, code, env)["projects"].([]any); len(projects) != 0 {
+		t.Fatalf("a help call wrote records: %v", projects)
+	}
+}
+
+// TestHelpFlagIsNotStolenFromAValue: `--goal -h` sets a goal, it does not ask for
+// help. The flag set decides what is a flag, not a scan of the arguments.
+func TestHelpFlagIsNotStolenFromAValue(t *testing.T) {
+	scratch(t)
+	add := mustOK(t, "add", "--project", "p", "--goal", "-h", "--check", "true")
+	if add["goal"] != "-h" {
+		t.Fatalf("goal = %v, want -h: %v", add["goal"], add)
+	}
+}
+
 // TestUsageExitsTwo: a malformed command line is a different answer from a refusal,
 // and a script can tell them apart by the exit code alone.
 func TestUsageExitsTwo(t *testing.T) {
