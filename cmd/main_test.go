@@ -31,6 +31,41 @@ func scratch(t *testing.T) {
 	t.Helper()
 	t.Setenv("MEMSTORE_DB", filepath.Join(t.TempDir(), "memory.db"))
 	t.Setenv("HOME", t.TempDir()) // the log sink writes under ~/.fs/logs
+
+	// No verb may reach the host's herdr, or the test would be testing the
+	// machine: a run on a laptop with herdr installed and one on a build host
+	// without it must take the same path.
+	old := launcher
+	launcher = &stubLauncher{live: map[string]string{}, panes: map[string]string{}}
+	t.Cleanup(func() { launcher = old })
+}
+
+// stubLauncher answers as herdr would, with no process and no PATH lookup.
+type stubLauncher struct {
+	live   map[string]string // pane -> working|idle
+	panes  map[string]string // name -> pane, for the handles it issued
+	closed []string
+}
+
+func (l *stubLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
+	pane := "w1:" + spec.Name
+	l.panes[spec.Name] = pane
+	l.live[pane] = coord.StatusWorking
+	return coord.Handle{Pane: pane, Name: spec.Name, Dir: spec.Dir}, nil
+}
+
+func (l *stubLauncher) List() (map[string]string, error) {
+	out := map[string]string{}
+	for pane, st := range l.live {
+		out[pane] = st
+	}
+	return out, nil
+}
+
+func (l *stubLauncher) Close(h coord.Handle) error {
+	l.closed = append(l.closed, h.Pane)
+	delete(l.live, h.Pane)
+	return nil
 }
 
 // okData asserts a successful envelope and returns its data.
@@ -430,4 +465,46 @@ func mustOK(t *testing.T, args ...string) map[string]any {
 		t.Fatalf("fs %s: exit %d: %v", strings.Join(args, " "), code, env)
 	}
 	return okData(t, code, env)
+}
+
+// TestStatusShowsTheProcessViewFromTheLauncher: the PROCESS column is what the
+// launcher says about the agent fs started, and nothing else. Silence in the rows
+// is not the answer — a live agent that stopped writing must still read working.
+func TestStatusShowsTheProcessViewFromTheLauncher(t *testing.T) {
+	scratch(t)
+	stub := launcher.(*stubLauncher)
+
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+	mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"status", "--project", "p", "--format", "table"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0: %s", code, stderr.String())
+	}
+	row := ""
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if strings.Contains(line, tid) {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("no row for %s:\n%s", tid, stdout.String())
+	}
+	if !strings.Contains(row, "working") {
+		t.Errorf("row does not carry the launcher's answer:\n%s", row)
+	}
+
+	// The agent ends: the same task now reads gone, without a lease ever moving.
+	for name, pane := range stub.panes {
+		if strings.HasPrefix(name, "fs-") {
+			delete(stub.live, pane)
+		}
+	}
+	stdout.Reset()
+	if code := run([]string{"status", "--project", "p", "--format", "table"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "gone") {
+		t.Errorf("a finished agent does not read gone:\n%s", stdout.String())
+	}
 }

@@ -1,7 +1,6 @@
 package coord
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -203,11 +202,8 @@ func Status(s *memory.Store, in StatusInput) (StatusReport, error) {
 func newestLaunches(rows []memory.Row) map[string]launchExtra {
 	out := map[string]launchExtra{}
 	for _, r := range rows {
-		if r.Kind != memory.KindLaunch {
-			continue
-		}
-		var ex launchExtra
-		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task == "" {
+		ex, ok := decodeLaunch(r)
+		if !ok {
 			continue
 		}
 		if prev, ok := out[ex.Task]; !ok || ex.At.After(prev.At) {

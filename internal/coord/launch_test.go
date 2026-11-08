@@ -159,25 +159,49 @@ func TestDispatchPinsTheStore(t *testing.T) {
 
 // TestDispatchRefusesASecondLaunch: a dispatch that runs twice — a double click, a
 // retried command — must not put two agents on one task. The first agent may not
-// have claimed yet, so the launch record, not the claim, is what says so.
+// have claimed yet, and after its lease lapses it may merely be silent, so the
+// launcher is asked. Only a gone process frees the task.
 func TestDispatchRefusesASecondLaunch(t *testing.T) {
 	s, now := open(t)
+	task := add(t, s, "p")
+	fake := &fakeLauncher{}
+	first, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+		t.Fatal("dispatched the same task twice while the first agent is running")
+	}
+
+	// Silence is not death: a lapsed lease with a live process still refuses.
+	*now = now.Add(2 * memory.DefaultTTL)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+		t.Fatal("dispatched over an agent whose lease lapsed but whose process is alive")
+	}
+
+	// A process that is gone frees the task: that is the recovery path.
+	delete(fake.status, first.Pane)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+		t.Fatalf("re-dispatch after the agent died: %v", err)
+	}
+}
+
+// TestDispatchRefusesWhenItCannotSee: if the launcher cannot answer, fs does not
+// guess. Starting a second agent for a task that might already have one is worse
+// than refusing.
+func TestDispatchRefusesWhenItCannotSee(t *testing.T) {
+	s, _ := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
+	fake.listErr = errLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
-		t.Fatal("dispatched the same task twice while the first agent is young")
+		t.Fatal("dispatched while the launcher was unreadable")
 	}
 	if len(fake.started) != 1 {
-		t.Fatalf("started %d agents, want 1", len(fake.started))
-	}
-	// After the lease the recovery is a new dispatch, which is how a dead round is
-	// replaced.
-	*now = now.Add(2 * memory.DefaultTTL)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
-		t.Fatalf("re-dispatch after the lease lapsed: %v", err)
+		t.Errorf("started %d agents, want 1", len(fake.started))
 	}
 }
 
@@ -306,10 +330,12 @@ func TestReapNeverTouchesAPaneFsDidNotOpen(t *testing.T) {
 	}
 }
 
-// TestReapClosesAReviewThatEndedInFeedback: a fail verb ends the round, and the
-// pane goes with it. The next round is a new dispatch, not the same pane.
+// TestReapClosesAReviewThatEndedInFeedback: a `fail` ends the round, and the pane
+// goes with it once that report is no longer keeping the claim alive — a reviewer
+// that just wrote its verdict is still writing its last words, so a live claim is
+// respected first. The next round is a new dispatch, not the same pane.
 func TestReapClosesAReviewThatEndedInFeedback(t *testing.T) {
-	s, _ := open(t)
+	s, now := open(t)
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
@@ -328,6 +354,7 @@ func TestReapClosesAReviewThatEndedInFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.status[got.Pane] = coord.StatusIdle
+	*now = now.Add(2 * memory.DefaultTTL) // the verdict's own write stopped keeping the claim alive
 
 	res, err := coord.Reap(s, coord.ReapInput{Project: "p"}, fake)
 	if err != nil {
@@ -419,5 +446,46 @@ func TestStatusWithoutALauncherStillAnswers(t *testing.T) {
 	}
 	if p := rep.Projects[0].Tasks[0].Process.Status; p != coord.ProcessUnknown {
 		t.Errorf("process = %q, want unknown when the launcher cannot answer", p)
+	}
+}
+
+// TestReapKeepsAReviewerThatReclaimed: round 2 is the same session id claiming
+// again after its lease lapsed. Its old `fail` is history — closing the pane then
+// would kill the round that had just restarted, which is how a review gets burned.
+func TestReapKeepsAReviewerThatReclaimed(t *testing.T) {
+	s, now := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	fake := &fakeLauncher{}
+	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coord.Claim(s, coord.ClaimInput{Project: "p", Session: got.Session, Task: review.Tid}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coord.Report(s, coord.ReportInput{
+		Project: "p", Session: got.Session, Task: review.Tid, Role: "review",
+		State: "fail", Note: "one check failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The lease lapses, the same reviewer re-claims for round 2, and it is idle
+	// between two checks.
+	*now = now.Add(2 * memory.DefaultTTL)
+	if _, err := coord.Claim(s, coord.ClaimInput{Project: "p", Session: got.Session, Task: review.Tid}); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	fake.status[got.Pane] = coord.StatusIdle
+
+	res, err := coord.Reap(s, coord.ReapInput{Project: "p"}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range res.Closed {
+		if c.Task == review.Tid {
+			t.Fatalf("closed a reviewer that holds the round again: %+v", c)
+		}
 	}
 }

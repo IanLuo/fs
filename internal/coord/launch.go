@@ -115,9 +115,17 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 		return DispatchResult{}, fmt.Errorf("task %s is held by session %s until %s: it is already being worked on",
 			task.Tid, held.Session, held.Expires().UTC().Format(time.RFC3339))
 	}
-	if prev, ok := recentLaunch(rows, task.Tid, now); ok {
-		return DispatchResult{}, fmt.Errorf("task %s was dispatched to session %s %s ago and that agent has not produced a verdict yet; wait for its lease to lapse or run fs reap",
-			task.Tid, prev.Session, now.Sub(prev.At).Round(time.Second))
+	if prev, ok := latestLaunch(rows, task.Tid); ok {
+		// A row and a clock cannot tell a dead agent from a slow one: a lapsed lease
+		// means the session stopped writing, and silence is not death. Ask.
+		live, err := l.List()
+		if err != nil {
+			return DispatchResult{}, fmt.Errorf("cannot see the agents already running (%w); refusing to start a second one for %s", err, task.Tid)
+		}
+		if status, alive := live[prev.Pane]; alive {
+			return DispatchResult{}, fmt.Errorf("task %s is already being worked on by session %s (agent %s, pane %s, %s); it is alive even if its lease lapsed — run fs reap or wait for it to finish",
+				task.Tid, prev.Session, prev.Name, prev.Pane, status)
+		}
 	}
 	dir := strings.TrimSpace(in.Dir)
 	if dir == "" {
@@ -154,11 +162,10 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	}, nil
 }
 
-// recentLaunch reports a launch for tid that is still young enough to be an agent
-// at work. It reads the record, not the pane: a double-clicked dispatch must be
-// refused even when the first agent has not claimed yet, and after the lease has
-// lapsed a new dispatch is the correct recovery.
-func recentLaunch(rows []memory.Row, tid string, now time.Time) (launchExtra, bool) {
+// latestLaunch returns the newest launch record for a task. What that record means
+// is decided against the launcher, never against the clock: the record says which
+// agent fs started, and only the launcher says whether it still exists.
+func latestLaunch(rows []memory.Row, tid string) (launchExtra, bool) {
 	var best launchExtra
 	var bestAt time.Time
 	for _, r := range rows {
@@ -170,26 +177,8 @@ func recentLaunch(rows []memory.Row, tid string, now time.Time) (launchExtra, bo
 			bestAt, best = ex.At, ex
 		}
 	}
-	if best.Session == "" || now.Sub(bestAt) >= memory.DefaultTTL {
+	if best.Session == "" {
 		return launchExtra{}, false
-	}
-	for _, r := range rows {
-		if r.Kind != memory.KindEvent {
-			continue
-		}
-		if sid, ok := memory.ParseSession(r.OriginID); !ok || sid != best.Session {
-			continue
-		}
-		if tid, ok := memory.ParseTask(r.OriginID); !ok || tid != best.Task {
-			continue
-		}
-		var ex eventExtra
-		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil {
-			continue
-		}
-		if ex.Role == "review" && (ex.State == "fail" || ex.State == "blocked") {
-			return launchExtra{}, false
-		}
 	}
 	return best, true
 }
@@ -422,19 +411,29 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 }
 
 // roundOver names why a launch's round has ended, or "" when it has not. It reads
-// states, never the clock alone: a verdict is a fact, a lapsed lease is a fact.
+// facts, never the clock alone: a verdict is a fact, a held claim is a fact, a
+// lapsed lease is a fact.
+//
+// Order matters. A live claim outranks an old verdict, because a reviewer refused
+// after a lapse re-claims for the next round with the same session id — its
+// previous `fail` is then history, not a reason to close the pane under it. Only
+// the session's newest word is read: a negative verdict ends the round, a progress
+// report means the agent is working.
 func roundOver(task Task, ix *memory.Index, sid string, now time.Time) string {
 	if task.done {
 		return "task closed"
 	}
+	if held, ok := ix.Claim(task.Tid); ok && held.Session == sid && held.Live(now) {
+		return ""
+	}
 	for _, ev := range eventsFor(ix, task.Tid, now) {
-		if ev.Session != sid || ev.Role != "review" {
+		if ev.Session != sid {
 			continue
 		}
-		if ev.State == "fail" || ev.State == "blocked" {
+		if ev.Role == "review" && (ev.State == "fail" || ev.State == "blocked") {
 			return "round ended: " + ev.State
 		}
-		break
+		break // the session's newest word is not a verdict
 	}
 	if held, ok := ix.Claim(task.Tid); !ok || held.Session != sid {
 		return "no longer holds the task"

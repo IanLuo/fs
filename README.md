@@ -94,7 +94,7 @@ What each verb writes:
 task and returns. There is no retry, no restart-on-crash and no fallback launcher.
 
 ```text
-read only ──► refuse if: task closed · live holder · launched seconds ago · no directory
+read only ──► refuse if: task closed · live holder · its agent still running · no directory
      │
      ▼
 start one agent (one launcher call) ──► failure = refusal, nothing else happens
@@ -111,9 +111,19 @@ claim as, and every declared check — because a new pane inherits the launcher'
 environment, not the caller's. A reviewer is told to run the checks and report the
 real exit codes; a developer is told to create its review and dispatch it.
 
+"Still running" is asked of the launcher, never inferred from a clock: a lapsed lease
+means the session stopped writing, not that its process ended.
+
 `fs reap` closes an agent fs recorded when its round is over: the task is closed, its
-reviewer recorded `fail` or `blocked`, or its lease lapsed. A working agent is never
-closed, and neither is a pane fs has no launch row for — reap closes what fs opened.
+newest word is a `fail`/`blocked` verdict, or its lease lapsed and it holds nothing. A
+live claim outranks an older verdict — a reviewer that re-claimed for the next round is
+working, not finished. A working agent is never closed, and neither is a pane fs has no
+launch row for: reap closes what fs opened.
+
+`fs status --format table` carries a `PROCESS` column for the same reason: `working`,
+`idle`, `gone`, or `-` when fs has no launch record and therefore no opinion. A lapsed
+lease beside a `working` process is a slow agent; a `gone` process beside a live claim is
+a dead one, and only the launcher can tell them apart.
 
 ### Claim, the only intricate step
 

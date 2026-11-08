@@ -102,6 +102,11 @@ func main() {
 // run parses one invocation and returns its exit code. It is a function rather
 // than a body in main so the envelopes and the exit codes can be tested without
 // starting a process.
+// launcher is the process view every verb uses. It is a variable so a cmd test can
+// answer without running the host's herdr: a test that shells out to whatever is
+// installed tests the machine, not fs.
+var launcher coord.Launcher = launch.Herdr{}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	args, verbose := stripVerbose(args)
 
@@ -284,7 +289,7 @@ func dispatchCmd(args []string) (any, error) {
 
 	return coord.Dispatch(s, coord.DispatchInput{
 		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
-	}, launch.Herdr{})
+	}, launcher)
 }
 
 func reapCmd(args []string) (any, error) {
@@ -300,7 +305,7 @@ func reapCmd(args []string) (any, error) {
 	}
 	defer s.Close()
 
-	return coord.Reap(s, coord.ReapInput{Project: *project}, launch.Herdr{})
+	return coord.Reap(s, coord.ReapInput{Project: *project}, launcher)
 }
 
 func statusCmd(args []string) (any, error) {
@@ -321,7 +326,7 @@ func statusCmd(args []string) (any, error) {
 	}
 	defer s.Close()
 
-	report, err := coord.Status(s, coord.StatusInput{Project: *project, Session: *session, Launcher: launch.Herdr{}})
+	report, err := coord.Status(s, coord.StatusInput{Project: *project, Session: *session, Launcher: launcher})
 	if err != nil {
 		return nil, err
 	}
