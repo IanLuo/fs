@@ -36,6 +36,7 @@ var ErrDuplicate = memstore.ErrDuplicateOrigin
 // than discovered later. It is a field so a test can place fs in controlled time.
 type Store struct {
 	db    *memstore.Store
+	path  string
 	Clock func() time.Time
 }
 
@@ -54,8 +55,13 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{db: db, Clock: time.Now}, nil
+	return &Store{db: db, path: path, Clock: time.Now}, nil
 }
+
+// Path is the memstore file this store reads and writes. A launched agent must be
+// told it, because a pane inherits the launcher's environment and not the caller's:
+// without it fs would start an agent that claims in a different store.
+func (s *Store) Path() string { return s.path }
 
 // defaultPath is memstore's own resolution: $MEMSTORE_DB, else
 // ~/.memstore/memory.db. fs must open the file the other services open, so the
@@ -134,6 +140,16 @@ func (s *Store) PutClaim(scope, tid, sid string, round int) error {
 	}
 	line := fmt.Sprintf("task %s held by session %s at round %d", tid, sid, round)
 	return s.put(scope, KindClaim, ClaimKey(tid, round), line, line, string(extra))
+}
+
+// PutLaunch appends the record that fs started an agent for tid under sid: what
+// kind, its pane, and the directory it works in. The row is the reason fs may
+// later close that pane and never another: it closes what it opened.
+func (s *Store) PutLaunch(scope, tid, sid, text, extra string) error {
+	if text == "" {
+		text = "launch"
+	}
+	return s.put(scope, KindLaunch, LaunchKey(tid, sid), text, text, extra)
 }
 
 // PutEvent appends one report: index n for (tid, sid), with the caller's

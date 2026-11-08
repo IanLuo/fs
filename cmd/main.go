@@ -1,4 +1,4 @@
-// Package main is the `fs` command: five verbs over shared memstore, and no
+// Package main is the `fs` command: seven verbs over shared memstore, and no
 // policy of its own.
 //
 // This layer owns flags, the JSON envelope and the exit codes. Every decision —
@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/coord"
+	"github.com/flagship-dev/flagship/internal/launch"
 	"github.com/flagship-dev/flagship/internal/logging"
 	"github.com/flagship-dev/flagship/internal/memory"
 )
@@ -42,6 +43,15 @@ var helpBlocks = []struct{ name, block string }{
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check and each
                                      one passed.`},
+	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+                                     Start one agent for one task. fs chooses the
+                                     session id, records what it started, and the
+                                     agent claims it. No retry: a launcher that
+                                     fails is a refusal.`},
+	{"reap", `  fs reap    [--project P]         Close the agents fs started whose round is
+                                     over: task closed, review verdict recorded,
+                                     or lease lapsed. Working agents are left
+                                     alone, and so is every pane fs did not open.`},
 	{"status", `  fs status [--project P] [--session S] [--format json|table]
                                      What fs knows. A session sees only what its
                                      binding authorizes; the user sees every
@@ -56,7 +66,7 @@ const usageNotes = `States: progress, dev-done, pass, fail, blocked.
 The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
 `
 
-// usageText is the whole interface: five verbs and nothing else.
+// usageText is the whole interface: seven verbs and nothing else.
 func usageText() string {
 	var b strings.Builder
 	b.WriteString("Usage: fs <command> [flags]\n\n")
@@ -116,6 +126,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		data, err = reportCmd(rest)
 	case "done":
 		data, err = doneCmd(rest)
+	case "dispatch":
+		data, err = dispatchCmd(rest)
+	case "reap":
+		data, err = reapCmd(rest)
 	case "status":
 		data, err = statusCmd(rest)
 	case "help", "-h", "--help":
@@ -249,6 +263,46 @@ func doneCmd(args []string) (any, error) {
 // statusCmd answers what fs knows, from rows alone. The default answer is the JSON
 // envelope every other verb prints; --format table is the same answer laid out for
 // a human, so nobody has to read JSON to see who is on what.
+func dispatchCmd(args []string) (any, error) {
+	fs := newFlags("dispatch")
+	project := fs.String("project", "", "the project scope the task lives in")
+	task := fs.String("task", "", "the task to start an agent for")
+	kind := fs.String("kind", "pi", "agent kind: pi, claude or codex")
+	dir := fs.String("dir", "", "where the agent works; defaults to the task's recorded path")
+	if err := parse(fs, args); err != nil {
+		return nil, err
+	}
+	if *project == "" || *task == "" {
+		return nil, usageErr{"dispatch: --project and --task are required"}
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+
+	return coord.Dispatch(s, coord.DispatchInput{
+		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
+	}, launch.Herdr{})
+}
+
+func reapCmd(args []string) (any, error) {
+	fs := newFlags("reap")
+	project := fs.String("project", "", "one project; omit for every project")
+	if err := parse(fs, args); err != nil {
+		return nil, err
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+
+	return coord.Reap(s, coord.ReapInput{Project: *project}, launch.Herdr{})
+}
+
 func statusCmd(args []string) (any, error) {
 	fs := newFlags("status")
 	project := fs.String("project", "", "one project; omit for every project")

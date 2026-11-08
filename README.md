@@ -21,6 +21,8 @@ fs claim  --project P --session S [--task TID]
 fs report --project P --session S --task TID --state S [--role dev|review|runtime]
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
+fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+fs reap   [--project P]
 fs status [--project P] [--session S] [--format json|table]
 ```
 
@@ -65,6 +67,15 @@ fs done   --project demo --session s-rev --task t-rev              # closes t-re
 fs status --project demo            # user view;  --session s-dev gives the agent's own view
 ```
 
+`fs dispatch` starts the agent for you; `fs reap` closes the ones whose round is
+over. Both are optional — an agent session started by a harness works the same way.
+
+```bash
+fs dispatch --project demo --task t-dev      # fs mints a session id, starts one agent,
+                                             # records the launch, returns the pane
+fs reap --project demo                       # closes agents fs started whose round ended
+```
+
 What each verb writes:
 
 | verb | rows written | notes |
@@ -73,7 +84,36 @@ What each verb writes:
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; this write is also the keepalive |
 | `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why |
+| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder and a duplicate start; a launcher failure is a refusal, never a retry |
+| `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
 | `status` | nothing | derived from rows on every call |
+
+### Dispatch and reap
+
+`fs dispatch` is a convenience, not a scheduler: it starts **one** agent for **one**
+task and returns. There is no retry, no restart-on-crash and no fallback launcher.
+
+```text
+read only ──► refuse if: task closed · live holder · launched seconds ago · no directory
+     │
+     ▼
+start one agent (one launcher call) ──► failure = refusal, nothing else happens
+     │
+     ▼
+write launch:<tid>:<sid> ──► if this write fails, close the agent again
+     │
+     ▼
+the agent claims itself with the id fs put in its prompt
+```
+
+The agent gets a prompt that names the store (`MEMSTORE_DB`), the session id to
+claim as, and every declared check — because a new pane inherits the launcher's
+environment, not the caller's. A reviewer is told to run the checks and report the
+real exit codes; a developer is told to create its review and dispatch it.
+
+`fs reap` closes an agent fs recorded when its round is over: the task is closed, its
+reviewer recorded `fail` or `blocked`, or its lease lapsed. A working agent is never
+closed, and neither is a pane fs has no launch row for — reap closes what fs opened.
 
 ### Claim, the only intricate step
 

@@ -5,15 +5,21 @@ import (
 	"strings"
 )
 
-// The four row kinds, and the four key prefixes. One prefix per kind because
+// The five row kinds, and the five key prefixes. One prefix per kind because
 // memstore's unique index is one key wide: `session:<sid>` is what makes a
 // session spent, `claim:<tid>:<n>` is what makes a task held, and collapsing
 // them into one row would silently drop one of the two invariants.
+//
+// A launch row is a fact about a process fs started, not a lock: it is written
+// once, it never expires, and what it records is who fs told to do the work and
+// where. Without it fs could not tell a round it opened from one it never
+// opened, and closing a pane would mean closing somebody else's.
 const (
-	KindTask  = "fs.task"
-	KindBind  = "fs.bind"
-	KindClaim = "fs.claim"
-	KindEvent = "fs.event"
+	KindTask   = "fs.task"
+	KindBind   = "fs.bind"
+	KindClaim  = "fs.claim"
+	KindEvent  = "fs.event"
+	KindLaunch = "fs.launch"
 )
 
 const (
@@ -21,6 +27,7 @@ const (
 	prefixSession = "session"
 	prefixClaim   = "claim"
 	prefixEvent   = "ev"
+	prefixLaunch  = "launch"
 )
 
 // TaskKey is the key of a task row.
@@ -34,6 +41,13 @@ func SessionKey(sid string) string { return prefixSession + ":" + sid }
 // this key, never from a comparison of its own.
 func ClaimKey(tid string, round int) string {
 	return prefixClaim + ":" + tid + ":" + strconv.Itoa(round)
+}
+
+// LaunchKey is the key of the record that fs started an agent for a task under a
+// session id it chose. One per (task, session): fs never starts two agents for
+// the same id, because the id is what the agent claims with.
+func LaunchKey(tid, sid string) string {
+	return prefixLaunch + ":" + tid + ":" + sid
 }
 
 // EventKey is the key of one report. The trailing index is per (task, session)
@@ -53,6 +67,8 @@ func ParseTask(key string) (string, bool) {
 		return p[1], p[1] != ""
 	case len(p) == 4 && p[0] == prefixEvent:
 		return p[1], p[1] != ""
+	case len(p) == 3 && p[0] == prefixLaunch:
+		return p[1], p[1] != ""
 	}
 	return "", false
 }
@@ -66,6 +82,8 @@ func ParseSession(key string) (string, bool) {
 	case len(p) == 2 && p[0] == prefixSession:
 		return p[1], p[1] != ""
 	case len(p) == 4 && p[0] == prefixEvent:
+		return p[2], p[2] != ""
+	case len(p) == 3 && p[0] == prefixLaunch:
 		return p[2], p[2] != ""
 	}
 	return "", false
