@@ -1,4 +1,4 @@
-<!-- specs:locked:4f92a84 2026-11-01 type=system-design -->
+<!-- specs:locked:9c50bbe 2026-11-08 type=system-design -->
 
 ## Link contract
 - **upstream** (this doc relies on): .agents/specs/fs-rebuild.md
@@ -16,7 +16,7 @@
 
 ## R2 Data model
 - Every fs row lives in `scope = "fs:<project>"`, with `origin = "fs"` and `origin_id` = its coordination key. No other scope is read or written.
-- **Four kinds, one job each:**
+- **Five kinds, one job each:**
 
 | kind | the row asserts | `origin_id` | `extra` |
 |---|---|---|---|
@@ -26,12 +26,14 @@
 | `fs.bind` | this session is used up | `session:<sid>` | task, session |
 | `fs.claim` | this task is held at round N | `claim:<tid>:<n>` | task, session, round, ttl_s |
 | `fs.event` | something happened | `ev:<tid>:<sid>:<n>` | state, role, command, exit, digest, note |
+| `fs.launch` | fs started this agent | `launch:<tid>:<sid>` | task, session, kind, role, pane, name, dir, at |
 
 - **`fs.bind` exists to be refused.** It is written once per session, before any claim, so a second task for that session fails on memstore's own unique index. A session is spent by construction, not by remembering to check.
 - **`fs.claim` exists to be refused for the same reason.** `claim:<tid>:<n>` is a key every racer computes identically, so exactly one insert wins and the loser is told by `ErrDuplicateOrigin`.
 - **Liveness is derived, never written.** A claim of round *n* is live while some row by its session is newer than `now − ttl_s`. There is no "expire" write, no cleanup job, and no flag two readers can disagree about.
 - **Status keeps the verdict and the fact.** A stale observation reports `state: unknown` — expiry is not evidence — while `reported` carries the state that observation last gave, beside `age_seconds`. Two fields because they are two facts: dropping `reported` makes a finished agent and a vanished one indistinguishable.
 - **A report is the record.** status returns every report a task carries, newest first and bounded, whatever role wrote it: a development report's note and digest are what a session taking over reads to find where the work stopped, and a review run is what closed it. Context does not survive a dead session; a report does, because the row outlives the process. No transcript exists, so none is reported.
+- **A launch record is a fact, not a lock.** It is written once, grants nothing and expires never. It exists because closing a pane is only safe when there is a record that fs opened it: without the row, "close the agent for this task" means "close whatever is in this pane", and the row is also what makes reap idempotent — the record stays, the process does not. The launch also records the session identity fs minted, so an agent that never claims is still attributable.
 - **The keepalive is any write.** `fs report` is the heartbeat; there is no separate renew verb and no separate heartbeat row.
 - **Completion is terminal.** `fs done` closes the task row via `CloseMemory`; a closed task is never reopened. Re-work is a new task.
 - **Empty record refused before writing:** no goal, no project scope, no declared check, no session identity.
@@ -49,7 +51,14 @@
 - **Never replace the claim with read-then-write.** A stale read may cost a refusal and a retry; it must never be able to produce two winners. A test fails if the protocol stops using `ErrDuplicateOrigin` as its arbiter.
 - **fs → memstore surface used: `Put`, `CloseMemory`, `Recent`, `Get`, `Search`.** Nothing else, and nothing new.
 - **Who owns time.** fs computes liveness from row timestamps against one host clock. Two hosts would need a different rule; V1 is one host, stated as an assumption rather than discovered later.
-- **fs → harness.** The harness supplies `--session <stable-id>` and a worktree path; a claim without a session is refused. Pull-only: fs issues no start command.
+- **fs → harness.** The harness supplies `--session <stable-id>` and a worktree path; a claim without a session is refused. An initiator may instead ask fs to start the agent (`fs dispatch`), and then fs mints the identity and hands it over.
+- **The dispatch protocol, and why it is three steps not two.** `fs dispatch`:
+  1. **Read only.** Does the task exist, is it closed, does a live claim hold it, was a young launch already made for it, is there a directory to work in? Every refusal happens here, so a typo cannot leave an orphan process.
+  2. **Start one agent.** One launcher call. A failure is reported and not retried, because a broken launcher retried is a room full of agents burning tokens.
+  3. **Record the launch.** Kind, pane, name, directory, time and the minted session id. If this write fails, the agent is closed again: a process fs cannot account for is exactly what reap exists to prevent.
+  The agent then claims itself with the identity in its prompt. fs starts the process; fs does not claim on its behalf, so the bind stays the agent's own write.
+- **Reap closes a round, never a worker.** A launch's round is over when the task is closed, when this session's newest review verdict is `fail` or `blocked`, or when its lease has lapsed. An agent herdr calls working is never closed; an agent herdr no longer lists is already gone; a pane with no launch row is never touched. Closing is an action, not a fact, so reap writes no row and stays idempotent.
+- **The prompt is fs's, not the harness's.** It carries the store (`MEMSTORE_DB`), because a pane inherits the launcher's environment and not the caller's — without it fs starts an agent that claims in a different store. It carries every declared check for a reviewer and the round's ending for both roles.
 - **Harness → fs: runtime status.** A harness that can observe process lifecycle reports it as `fs.event` with `role=runtime`. A harness that cannot leaves it absent, and absence reads as `unknown` — never as alive.
 - **fs → reviewer.** The review input is assembled from the task row, the diff and the development task's `fs.event` rows — a fixed field list, not a transcript. Independence is a data shape, not an instruction.
 - **fs → user.** JSON envelopes over `fs:` rows only. Aggregate queries cross projects; an agent's query is limited to its bound project.
@@ -71,31 +80,34 @@
 - **Derived state costs nothing to keep consistent** because none is persisted: a longer history costs read latency, not a store to repair.
 
 ## R6 What fs deliberately does not do
-- No cap, lease coordinator, dispatch brief, close evidence line or launch config.
-- No process launching, no UI, no TUI, no server, no accounts.
+- No cap, lease coordinator, dispatch brief or close evidence line.
+- No process supervision: no retries, no restart-on-crash, no supervision loop, no fallback launcher, no lifecycle management beyond one round, no second agent per task. fs starts one agent when an initiator asks, records it, and closes what it recorded.
+- No UI, no TUI, no server, no accounts.
 - No import, migration, archival or re-entry of `~/.fs/store.db`.
 - No copying of project state or history out of memstore.
 - No new memstore API. If the claim protocol ever appears to need one, the first question is whether the protocol is wrong.
-- Five verbs total: `add`, `claim`, `report`, `done`, `status`.
+- Seven verbs total: `add`, `claim`, `report`, `done`, `dispatch`, `reap`, `status`.
 
 ## R7 Structure — layers, tree, and the delete list
 - **Folded deliberately.** The architecture rung (layers, repo tree, cross-cutting) lives here rather than in a third document: the rebuild is one product, and a reader who needs three pages to learn it will read one. `fs-rebuild.md` is the contract; this page is the whole structure.
-- **Layers, one direction — `cmd → coord → memory → memstore`:**
+- **Layers, one direction — `cmd → coord → memory → memstore`, with `cmd → launch` beside it:**
 
 | layer | owns | refuses |
 |---|---|---|
-| `cmd/` | flags, JSON envelope, exit codes | any policy or record knowledge |
-| `internal/coord/` | task shape, the claim protocol, the completion gate, status derivation | importing memstore |
+| `cmd/` | flags, JSON envelope, exit codes; constructs the one launcher | any policy or record knowledge |
+| `internal/coord/` | task shape, the claim protocol, the completion gate, status derivation, what to start and when a round is over | importing memstore or the launcher |
+| `internal/launch/` | the one launcher: herdr panes, agent status, closing a pane | deciding anything |
 | `internal/memory/` | the only importer of memstore: scope guard, key construction, liveness arithmetic | knowing what a task is |
 | `internal/logging/` | diagnostics | gating anything |
 
-- **Why this seam.** The claim protocol is correct only if both racers build the same key. Key construction exists in exactly one package, so there is one place to read and one place to break. A test fails if any package outside `internal/memory` imports the memstore module.
+- **Why this seam.** The claim protocol is correct only if both racers build the same key. Key construction exists in exactly one package, so there is one place to read and one place to break. A test fails if any package outside `internal/memory` imports the memstore module. The launcher seam is the same argument pointed the other way: `coord` names what to start and why a round is over, `launch` is the only code that starts anything, and a test fails if `coord` imports it — a gate that could start a process is a refusal with a side effect.
 - **The tree:**
 
 ```text
 fs/                        this repository — the tool, not a consumer of it
   cmd/            main.go, output.go            flags → coord → JSON; no policy
-  internal/coord/ task.go claim.go gate.go status.go
+  internal/coord/ task.go claim.go gate.go status.go launch.go
+  internal/launch/ herdr.go                     the only place a process is started
   internal/memory/ store.go keys.go scope.go   the only memstore importer
   internal/logging/ logging.go                 unchanged, reused as-is
   vendor/         committed; the build is hermetic and offline

@@ -1,4 +1,4 @@
-<!-- specs:locked:4f92a84 2026-11-01 type=spec -->
+<!-- specs:locked:9c50bbe 2026-11-08 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -28,13 +28,13 @@
   - Add no fs-owned schema, direct SQL, second store, local index or cache.
 - **Out:**
   - A cap, single coordinator lease, dispatch/close event ledger, fs-owned database, persistent cache, direct SQL into memstore, or alternate persistent source of coordination state.
-  - fs starting or managing agent processes in V1. The user or harness starts each agent; agents pull work through fs. A coordinator or harness may dispatch a reviewer from the unheld review tasks fs shows, but fs itself starts nothing and remains the arbiter of completion.
+  - Supervision of agent processes: no retries, no restart-on-crash, no supervision loop, no fallback launcher, no lifecycle management beyond one round. An initiator — the user, the harness, or a developer agent — asks fs to start one agent for one task; fs starts it through a single configured launcher, records what it started, and closes only an agent it recorded. Starting an agent is never evidence that it worked: fs remains the arbiter of completion, and a launched agent has to claim, report and pass its checks like any other.
   - A visual dashboard, web server, TUI, remote coordination service, accounts, multi-user authorization, containers/VMs, automatic task decomposition, and automatic task planning.
   - Migration, import, archival, deletion, or re-entry of the legacy `~/.fs/store.db`. That data is not part of the new fs.
   - Duplicating project state, project history or durable project knowledge that already comes from memstore.
 - **Primary flow:**
   1. User creates a task with a non-empty goal, project scope, acceptance criteria and required check details.
-  2. Harness starts a fresh agent session and supplies a unique, stable session identity.
+  2. The initiator starts a fresh agent session and gives it a unique, stable identity: either the harness starts it and supplies the identity, or the initiator asks fs to start it and fs mints the identity, hands it over in the agent's instructions, and records the launch.
   3. Agent queries eligible work through fs; fs reads its namespace through memstore.
   4. Agent atomically claims one eligible task. Memstore prevents another session from claiming it concurrently and binds the session to that task.
   5. Agent works in the task's isolated worktree and reports progress/evidence through fs. Each mutation verifies the session/task binding.
@@ -91,6 +91,7 @@
 ## R8 Data requirements
 - **Inputs:** project/repository scope; task goal; acceptance criteria; required check commands; harness-provided session identity; memstore's fs namespace; agent status and heartbeat updates; development diff and bounded evidence for review.
 - **Coordination data fs may store:** task identity and assignment; task type (development/review); project scope; bound session identity; task/agent status with source and timestamp; lease/heartbeat and attempt information; related development/review task references; required checks and exact results; bounded/redacted evidence necessary to determine whether completion criteria passed.
+- **Launch record.** When fs starts an agent at an initiator's request it records, before anything is assumed to have happened: the task, the session identity fs minted, the agent kind, the launcher handle and pane, the working directory and the time. The record is what lets fs close exactly that agent later and never another. It is a record, not a lock, and it grants no authority the claim does not also grant.
 - **Locations are absolute.** Where a task's work runs is recorded as an absolute path when the task is written. A relative path records no location: it means whatever directory the reader happens to be in.
 - **Project data:** project state, history and durable project knowledge are retrieved from memstore and are not copied into fs-owned state.
 - **Outputs:** task identifier; claim/refusal result; status-query result; progress/evidence record; independent review/check result; completion only after required checks pass.
@@ -117,6 +118,8 @@
 - **Destructive actions:** no legacy DB deletion or import is in scope. A completed task is never reopened or overwritten; new work creates a new task.
 - **Compliance:** N/A for the stated local single-user use. No regulatory requirement was supplied; do not invent one.
 
+- **AC10 — dispatch starts one agent; reap closes only its own.** An initiator may ask fs to start an agent for a task. fs refuses a closed task, a task with a live holder, and a second start for a task whose launched agent is still young; a launcher failure is a refusal, never a retry. fs hands the agent the session identity it minted, the checks to run and the store to use, records the launch, and returns. Reaping closes an agent fs recorded whose round is over — the task closed, the reviewer's verdict recorded, or the lease lapsed — and never closes an agent that is still working or a pane fs has no record of opening. A launched agent gains no shortcut: it claims and reports as any other session does.
+
 ## R11 Verification plan
 - **AC1:** fs integration test with valid, empty-goal and missing-scope cases; assert the invalid cases create no memstore record.
 - **AC2:** memstore API barrier test using concurrent processes against one task; exactly one succeeds. Repeat under race detector and after process restart.
@@ -127,6 +130,7 @@
 - **AC7:** fake-clock or controlled-time lease tests at 30s heartbeat and 120s expiry; old session refusal after reassignment; expiry never marks done; attempt history preserved — including the expired session's last report (state, note, digest), readable by the new session through status.
 - **AC8:** seed fs and non-fs namespaces; run every fs read/write and assert only fs namespace changes/returns. Inject memstore unavailable, timeout and ambiguous-write results; assert no fallback and identity-based resolution.
 - **AC9:** verify completed task cannot be reopened; new task receives a new identity; no fs path imports or manages `~/.fs/store.db`.
+- **AC10:** with a fake launcher, prove dispatch records the launch and refuses a closed task, a live-held task and a duplicate start; prove a launcher error writes no record and starts no second process. Prove reap closes a finished round (task closed, review verdict recorded, lapsed lease) and leaves a working agent and an unrecorded pane alone. Prove the prompt carries the minted session identity, every declared check, and the store fs is reading. One real end-to-end run on disposable state: fs starts a development agent, that agent creates and dispatches its own reviewer, both rounds close, and reap returns the pane list to what it found.
 - **R5 performance:** benchmark claim/status at 10,000 task records on the supported local host; report p95, dataset shape and hardware. If the provisional target fails, review the API/index design; do not add an fs-side store.
 - **Build quality:** memstore suite and fs suite, race/concurrency tests, vet, format and package builds must pass. Build a fresh clone and exercise the documented CLI.
 - **End-to-end:** on disposable/copied state, run one user-created development task with two competing agents, query status, complete the development task, start a different-context review agent, execute checks, query final status and confirm no duplicate claim or cross-task write.
