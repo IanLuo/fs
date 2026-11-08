@@ -81,28 +81,29 @@ func TestStartClosesThePaneItCouldNotStart(t *testing.T) {
 	}
 }
 
-// TestStatusReadsHerdsAnswer: working is working, anything else is idle, and an
-// agent herdr no longer lists is gone rather than an error.
-func TestStatusReadsHerdsAnswer(t *testing.T) {
-	h := coord.Handle{Pane: "w1:p9", Name: "fs-abc-120000"}
-	cases := []struct {
-		name, answer, want string
-	}{
-		{"working", `{"result":{"agents":[{"name":"fs-abc-120000","pane_id":"w1:p9","agent_status":"working"}]}}`, coord.StatusWorking},
-		{"idle", `{"result":{"agents":[{"name":"fs-abc-120000","pane_id":"w1:p9","agent_status":"idle"}]}}`, coord.StatusIdle},
-		{"gone", `{"result":{"agents":[]}}`, coord.StatusGone},
+// TestListReadsHerdsAnswerOnce: working is working, anything else is idle, a pane
+// herdr no longer lists is absent (gone, not an error), and one call answers for
+// every agent.
+func TestListReadsHerdsAnswerOnce(t *testing.T) {
+	stub(t, map[string]string{"agent list": `{"result":{"agents":[
+		{"name":"fs-a","pane_id":"w1:p9","agent_status":"working"},
+		{"name":"fs-b","pane_id":"w1:pA","agent_status":"idle"},
+		{"name":"fs-c","pane_id":"w1:pB","agent_status":"done"}]}}`}, nil)
+
+	got, err := Herdr{}.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			stub(t, map[string]string{"agent list": c.answer}, nil)
-			got, err := Herdr{}.Status(h)
-			if err != nil {
-				t.Fatalf("status: %v", err)
-			}
-			if got != c.want {
-				t.Errorf("status = %q, want %q", got, c.want)
-			}
-		})
+	if got["w1:p9"] != coord.StatusWorking {
+		t.Errorf("w1:p9 = %q, want working", got["w1:p9"])
+	}
+	for _, pane := range []string{"w1:pA", "w1:pB"} {
+		if got[pane] != coord.StatusIdle {
+			t.Errorf("%s = %q, want idle: only working is working", pane, got[pane])
+		}
+	}
+	if _, ok := got["w1:pZ"]; ok {
+		t.Error("a pane herdr never listed is not in the map")
 	}
 }
 

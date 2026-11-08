@@ -78,12 +78,15 @@ func (h Herdr) Start(spec coord.LaunchSpec) (coord.Handle, error) {
 	return handle, nil
 }
 
-// Status reports whether the agent is still working. An agent herdr no longer
-// lists is gone; that is not an error, it is the answer.
-func (h Herdr) Status(handle coord.Handle) (string, error) {
+// List reports every live agent herdr knows, by pane. One call answers for a whole
+// status listing or a whole reap pass, which is why the interface asks for a list
+// and not a handle at a time.
+//
+// An agent herdr no longer lists is gone; that is not an error, it is the answer.
+func (h Herdr) List() (map[string]string, error) {
 	out, err := run(h.bin(), "agent", "list")
 	if err != nil {
-		return "", fmt.Errorf("herdr agent list: %w", err)
+		return nil, fmt.Errorf("herdr agent list: %w", err)
 	}
 	var list struct {
 		Result struct {
@@ -95,22 +98,20 @@ func (h Herdr) Status(handle coord.Handle) (string, error) {
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
-		return "", fmt.Errorf("herdr agent list: unreadable answer: %w", err)
+		return nil, fmt.Errorf("herdr agent list: unreadable answer: %w", err)
 	}
+	live := map[string]string{}
 	for _, a := range list.Result.Agents {
-		match := handle.Name != "" && a.Name == handle.Name
-		if !match && handle.Pane != "" && a.PaneID == handle.Pane {
-			match = true
-		}
-		if !match {
+		if a.PaneID == "" {
 			continue
 		}
+		status := coord.StatusIdle
 		if strings.EqualFold(a.AgentStatus, coord.StatusWorking) {
-			return coord.StatusWorking, nil
+			status = coord.StatusWorking
 		}
-		return coord.StatusIdle, nil
+		live[a.PaneID] = status
 	}
-	return coord.StatusGone, nil
+	return live, nil
 }
 
 // Close closes the pane. A pane that is already gone is not an error: closing is

@@ -166,9 +166,9 @@ $ fs status --format table
 2 projects, 3 tasks · 2 open · 1 claimed
 
 demo
-  TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      GOAL
-  t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   add lease-expiry tests
-  t-f64fa63ac1ddac3e  dev     open     -                 -      -         unknown    a goal long enough to be cut off…
+  TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      PROCESS  GOAL
+  t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   working  add lease-expiry tests
+  t-f64fa63ac1ddac3e  dev     open     -                 -      -         unknown    -        a goal long enough to be cut off…
 
 3 projects with no tasks: 3d-house, ann, cap
 ```
@@ -182,6 +182,12 @@ demo
   verdict is unknown, and the state shown is what the agent last said, so a finished agent
   and a vanished one are not conflated. The JSON carries both as `agent.state` and
   `agent.reported`, with `agent.age_seconds`.
+- `PROCESS` is what the launcher says about the agent fs started for the task: `working`,
+  `idle` or `gone`. `-` means fs has no launch record — a pane somebody else opened, which fs
+  does not judge and will not close. A launcher fs cannot reach leaves the cell `-` and adds
+  one warning line under the table; the rows still answer. Read it beside `LEASE`: a lapsed
+  lease with a `working` process is a silent agent, not a dead one. The JSON carries it as
+  `process.status` with `process.pane`, `process.name` and `process.launched`.
 - Projects with no tasks are folded into one line: a scope keeps its name for as long as it
   holds any `fs:` row, so empty projects say nothing about current work. The JSON view still
   carries every project, including `"tasks": []`.

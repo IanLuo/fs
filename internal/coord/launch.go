@@ -11,13 +11,18 @@ import (
 )
 
 // Launcher is the whole of what fs knows about processes: start an agent, ask
-// whether it is still working, close it. There is one implementation (herdr) and
-// no fallback. A launcher that cannot start is a misconfiguration and a refusal —
+// which agents exist, close one. There is one implementation (herdr) and no
+// fallback. A launcher that cannot start is a misconfiguration and a refusal —
 // never a retry, because a broken launcher retried is a room full of agents
 // burning tokens.
+//
+// List returns every live agent by pane, in one call. One call matters: a claim
+// lease says whether an agent is *writing*, and silence is not death, so the only
+// way to tell a dead agent from a slow one is to ask the launcher — and asking once
+// per status keeps that affordable.
 type Launcher interface {
 	Start(LaunchSpec) (Handle, error)
-	Status(Handle) (string, error)
+	List() (map[string]string, error)
 	Close(Handle) error
 }
 
@@ -109,9 +114,16 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 		return DispatchResult{}, fmt.Errorf("task %s is held by session %s until %s: it is already being worked on",
 			task.Tid, held.Session, held.Expires().UTC().Format(time.RFC3339))
 	}
-	if prev, ok := recentLaunch(rows, task.Tid, now); ok {
-		return DispatchResult{}, fmt.Errorf("task %s was dispatched to session %s %s ago and that agent has not produced a verdict yet; wait for its lease to lapse or run fs reap",
-			task.Tid, prev.Session, now.Sub(prev.At).Round(time.Second))
+	if prev, ok := latestLaunch(rows, task.Tid); ok {
+		// A row and a clock cannot tell a dead agent from a slow one. Ask.
+		live, err := l.List()
+		if err != nil {
+			return DispatchResult{}, fmt.Errorf("cannot see the agents already running (%w); refusing to start a second one for %s", err, task.Tid)
+		}
+		if status, alive := live[prev.Pane]; alive {
+			return DispatchResult{}, fmt.Errorf("task %s is already being worked on by session %s (agent %s, pane %s, %s); run fs reap or wait for it to finish",
+				task.Tid, prev.Session, prev.Name, prev.Pane, status)
+		}
 	}
 	dir := strings.TrimSpace(in.Dir)
 	if dir == "" {
@@ -148,11 +160,10 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	}, nil
 }
 
-// recentLaunch reports a launch for tid that is still young enough to be an agent
-// at work. It reads the record, not the pane: a double-clicked dispatch must be
-// refused even when the first agent has not claimed yet, and after the lease has
-// lapsed a new dispatch is the correct recovery.
-func recentLaunch(rows []memory.Row, tid string, now time.Time) (launchExtra, bool) {
+// latestLaunch returns the newest launch record for tid. What it is used for is
+// decided by the caller against the launcher, never against the clock: a lapsed
+// lease means the agent went silent, and silence is not death.
+func latestLaunch(rows []memory.Row, tid string) (launchExtra, bool) {
 	var best launchExtra
 	var bestAt time.Time
 	for _, r := range rows {
@@ -167,7 +178,7 @@ func recentLaunch(rows []memory.Row, tid string, now time.Time) (launchExtra, bo
 			bestAt, best = ex.At, ex
 		}
 	}
-	if best.Session == "" || now.Sub(bestAt) >= memory.DefaultTTL {
+	if best.Session == "" {
 		return launchExtra{}, false
 	}
 	for _, r := range rows {
@@ -343,6 +354,26 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 		for _, t := range allTasks(local) {
 			tasks[t.Tid] = t
 		}
+		live, lerr := l.List()
+		if lerr != nil {
+			for _, r := range local {
+				if r.Kind != memory.KindLaunch {
+					continue
+				}
+				var ex launchExtra
+				if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task == "" || ex.Session == "" {
+					continue
+				}
+				k := key{ex.Task, ex.Session}
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+				out.Kept = append(out.Kept, Reaped{Task: ex.Task, Session: ex.Session, Pane: ex.Pane, Name: ex.Name,
+					Reason: "cannot see the agents: " + lerr.Error()})
+			}
+			continue
+		}
 		for _, r := range local {
 			if r.Kind != memory.KindLaunch {
 				continue
@@ -361,15 +392,10 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 			if !ok {
 				continue
 			}
-			status, serr := l.Status(handle)
-			if serr != nil {
-				out.Kept = append(out.Kept, Reaped{Task: ex.Task, Session: ex.Session, Pane: ex.Pane, Name: ex.Name,
-					Reason: "cannot see the agent: " + serr.Error()})
-				continue
-			}
+			status, alive := live[ex.Pane]
 			reason := roundOver(task, ix, ex.Session, now)
 			switch {
-			case status == StatusGone:
+			case !alive:
 				out.Closed = append(out.Closed, Reaped{Task: ex.Task, Session: ex.Session, Pane: ex.Pane, Name: ex.Name,
 					Reason: "agent gone"})
 			case status == StatusWorking:

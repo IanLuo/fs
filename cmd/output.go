@@ -80,8 +80,25 @@ const (
 	colRound = 5
 	colLease = 8
 	colAgent = 9
+	colProc  = 7
 	colGoal  = 60
 )
+
+// processCell is what the launcher said about the agent fs started for the task.
+// "-" means fs has no launch record: a pane somebody else opened, which fs does not
+// judge and will not close.
+func processCell(p coord.Process) string {
+	switch p.Status {
+	case coord.ProcessWorking:
+		return "working"
+	case coord.ProcessIdle:
+		return "idle"
+	case coord.ProcessGone:
+		return "gone"
+	default:
+		return "-"
+	}
+}
 
 // renderStatus formats a status report for a human: a count, then one block per
 // project and one line per task. It renders the same report the JSON envelope
@@ -112,11 +129,11 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s\n", p.Project)
-		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
+		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
 			colTask, "TASK", colKind, "KIND", colState, "STATE", colHold, "HOLDER",
-			colRound, "ROUND", colLease, "LEASE", colAgent, "AGENT", "GOAL")
+			colRound, "ROUND", colLease, "LEASE", colAgent, "AGENT", colProc, "PROCESS", "GOAL")
 		for _, t := range p.Tasks {
-			fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
+			fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
 				colTask, cell(t.Task, colTask),
 				colKind, cell(t.Kind, colKind),
 				colState, cell(t.State, colState),
@@ -124,8 +141,13 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 				colRound, cell(round(t), colRound),
 				colLease, cell(lease(t, now), colLease),
 				colAgent, cell(agentCell(t.Agent), colAgent),
+				colProc, cell(processCell(t.Process), colProc),
 				cell(oneLine(t.Goal), colGoal))
 		}
+	}
+
+	if r.ProcessWarning != "" {
+		fmt.Fprintf(&b, "\n! %s (process shown as unknown)\n", r.ProcessWarning)
 	}
 
 	// A report older than the lease keeps its two facts: the verdict is unknown, and

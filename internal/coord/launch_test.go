@@ -13,9 +13,10 @@ import (
 // so a test can say "this agent is still working" without a terminal.
 type fakeLauncher struct {
 	started  []coord.LaunchSpec
-	status   map[string]string // pane -> working|idle|gone
+	status   map[string]string // pane -> working|idle; absent means gone
 	closed   []string
 	startErr error
+	listErr  error
 }
 
 func (f *fakeLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
@@ -33,11 +34,15 @@ func (f *fakeLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
 	return coord.Handle{Pane: pane, Name: spec.Name, Dir: spec.Dir}, nil
 }
 
-func (f *fakeLauncher) Status(h coord.Handle) (string, error) {
-	if s, ok := f.status[h.Pane]; ok {
-		return s, nil
+func (f *fakeLauncher) List() (map[string]string, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
 	}
-	return coord.StatusGone, nil
+	out := map[string]string{}
+	for pane, st := range f.status {
+		out[pane] = st
+	}
+	return out, nil
 }
 
 func (f *fakeLauncher) Close(h coord.Handle) error {
@@ -154,25 +159,49 @@ func TestDispatchPinsTheStore(t *testing.T) {
 
 // TestDispatchRefusesASecondLaunch: a dispatch that runs twice — a double click, a
 // retried command — must not put two agents on one task. The first agent may not
-// have claimed yet, so the launch record, not the claim, is what says so.
+// have claimed yet, and after its lease lapses it may merely be silent, so the
+// launcher is asked. Only a gone process frees the task.
 func TestDispatchRefusesASecondLaunch(t *testing.T) {
 	s, now := open(t)
+	task := add(t, s, "p")
+	fake := &fakeLauncher{}
+	first, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+		t.Fatal("dispatched the same task twice while the first agent is running")
+	}
+
+	// Silence is not death: a lapsed lease with a live process still refuses.
+	*now = now.Add(2 * memory.DefaultTTL)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+		t.Fatal("dispatched over an agent whose lease lapsed but whose process is alive")
+	}
+
+	// A process that is gone frees the task: that is the recovery path.
+	delete(fake.status, first.Pane)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+		t.Fatalf("re-dispatch after the agent died: %v", err)
+	}
+}
+
+// TestDispatchRefusesWhenItCannotSee: if the launcher cannot answer, fs does not
+// guess. Starting a second agent for a task that might already have one is worse
+// than refusing.
+func TestDispatchRefusesWhenItCannotSee(t *testing.T) {
+	s, _ := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
+	fake.listErr = errLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
-		t.Fatal("dispatched the same task twice while the first agent is young")
+		t.Fatal("dispatched while the launcher was unreadable")
 	}
 	if len(fake.started) != 1 {
-		t.Fatalf("started %d agents, want 1", len(fake.started))
-	}
-	// After the lease the recovery is a new dispatch, which is how a dead round is
-	// replaced.
-	*now = now.Add(2 * memory.DefaultTTL)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
-		t.Fatalf("re-dispatch after the lease lapsed: %v", err)
+		t.Errorf("started %d agents, want 1", len(fake.started))
 	}
 }
 
@@ -334,3 +363,85 @@ func TestReapClosesAReviewThatEndedInFeedback(t *testing.T) {
 }
 
 var _ = time.Now
+
+// TestStatusTellsSilenceFromDeath: the lease says whether a session is writing, the
+// launcher says whether its process exists. A lapsed lease with a live process is a
+// slow agent, not a dead one, and a task fs never launched reads unknown rather than
+// gone — fs judges only what it opened.
+func TestStatusTellsSilenceFromDeath(t *testing.T) {
+	s, now := open(t)
+	fake := &fakeLauncher{}
+
+	launched := add(t, s, "p")
+	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: launched.Tid, Dir: t.TempDir()}, fake)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if _, err := coord.Claim(s, coord.ClaimInput{Project: "p", Session: got.Session, Task: launched.Tid}); err != nil {
+		t.Fatal(err)
+	}
+	hand := add(t, s, "p") // a pane somebody opened by hand: no launch record
+
+	*now = now.Add(2 * memory.DefaultTTL) // every lease lapses; both processes stay
+	rep, err := coord.Status(s, coord.StatusInput{Project: "p", Launcher: fake})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	byTask := map[string]coord.TaskStatus{}
+	for _, task := range rep.Projects[0].Tasks {
+		byTask[task.Task] = task
+	}
+	if p := byTask[launched.Tid]; p.Process.Status != coord.ProcessWorking {
+		t.Errorf("launched task process = %q, want working: the agent is alive though silent", p.Process.Status)
+	}
+	if byTask[launched.Tid].LeaseLive {
+		t.Error("the lease should read lapsed")
+	}
+	if p := byTask[hand.Tid]; p.Process.Status != coord.ProcessUnknown {
+		t.Errorf("hand-opened task process = %q, want unknown", p.Process.Status)
+	}
+
+	// The process really ended: now it reads gone.
+	delete(fake.status, got.Pane)
+	rep, err = coord.Status(s, coord.StatusInput{Project: "p", Launcher: fake})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, task := range rep.Projects[0].Tasks {
+		if task.Task == launched.Tid && task.Process.Status != coord.ProcessGone {
+			t.Errorf("process = %q, want gone", task.Process.Status)
+		}
+	}
+}
+
+// TestStatusWithoutALauncherStillAnswers: a read never fails closed. Without a
+// launcher, or with one that errors, the process reads unknown and the rows still
+// answer.
+func TestStatusWithoutALauncherStillAnswers(t *testing.T) {
+	s, _ := open(t)
+	task := add(t, s, "p")
+	fake := &fakeLauncher{}
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	rep, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatalf("status with no launcher: %v", err)
+	}
+	if p := rep.Projects[0].Tasks[0].Process.Status; p != coord.ProcessUnknown {
+		t.Errorf("process = %q, want unknown", p)
+	}
+
+	fake.listErr = errLauncher{}
+	rep, err = coord.Status(s, coord.StatusInput{Project: "p", Launcher: fake})
+	if err != nil {
+		t.Fatalf("status with a broken launcher: %v", err)
+	}
+	if rep.ProcessWarning == "" {
+		t.Error("a broken launcher was not reported as a warning")
+	}
+	if p := rep.Projects[0].Tasks[0].Process.Status; p != coord.ProcessUnknown {
+		t.Errorf("process = %q, want unknown when the launcher cannot answer", p)
+	}
+}

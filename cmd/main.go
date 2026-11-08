@@ -321,9 +321,12 @@ func statusCmd(args []string) (any, error) {
 	}
 	defer s.Close()
 
-	report, err := coord.Status(s, coord.StatusInput{Project: *project, Session: *session})
+	report, err := coord.Status(s, coord.StatusInput{Project: *project, Session: *session, Launcher: launch.Herdr{}})
 	if err != nil {
 		return nil, err
+	}
+	if report.ProcessWarning != "" {
+		logger.Warn("process view unavailable", "reason", report.ProcessWarning)
 	}
 	if *format == "table" {
 		return tableOutput(renderStatus(report, s.Now())), nil

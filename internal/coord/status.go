@@ -1,6 +1,7 @@
 package coord
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -17,7 +18,33 @@ const maxEvidence = 20
 type StatusInput struct {
 	Project string
 	Session string
+	// Launcher asks whether the agents fs started still exist. Nil means no
+	// process view: every task's process then reads unknown, which is the truth —
+	// fs knows what it launched, not what is running.
+	Launcher Launcher
 }
+
+// Process is what the launcher says about the agent fs started for a task.
+//
+// It is a second, orthogonal fact beside the lease. A lease says whether a session
+// is *writing*; a process says whether it merely exists. A lapsed lease reads
+// unknown, never dead, and only the launcher can tell a slow agent from a gone one.
+// `Status` is one of working, idle, gone, or unknown — unknown when fs has no
+// launch record for the task (a pane somebody else opened) or no launcher to ask.
+type Process struct {
+	Status string     `json:"status"`
+	Pane   string     `json:"pane,omitempty"`
+	Name   string     `json:"name,omitempty"`
+	At     *time.Time `json:"launched,omitempty"`
+}
+
+// Process statuses, plus the one fs reports when it cannot answer.
+const (
+	ProcessWorking = "working"
+	ProcessIdle    = "idle"
+	ProcessGone    = "gone"
+	ProcessUnknown = "unknown"
+)
 
 // Observed is one status as its source reported it, with how stale it is.
 //
@@ -52,6 +79,7 @@ type TaskStatus struct {
 	Round        int        `json:"round,omitempty"`
 	LeaseExpires *time.Time `json:"lease_expires,omitempty"`
 	LeaseLive    bool       `json:"lease_live"`
+	Process      Process    `json:"process"`
 	Agent        Observed   `json:"agent"`
 	Runtime      Observed   `json:"runtime"`
 	Evidence     []Evidence `json:"evidence,omitempty"`
@@ -66,6 +94,10 @@ type ProjectStatus struct {
 // StatusReport is the answer to a status question: one entry per project in view.
 type StatusReport struct {
 	Projects []ProjectStatus `json:"projects"`
+	// ProcessWarning says why the process view is unavailable, when it is. A
+	// status read still answers: the rows are the evidence, the launcher is a
+	// convenience, and an absent launcher must not make a read fail.
+	ProcessWarning string `json:"process_warning,omitempty"`
 }
 
 // Status derives what fs knows from rows alone. Nothing here is cached and
@@ -135,6 +167,18 @@ func Status(s *memory.Store, in StatusInput) (StatusReport, error) {
 		byScope[r.Scope] = append(byScope[r.Scope], r)
 	}
 
+	// One launcher read for the whole listing. A failure is not a refusal: reading
+	// never fails closed, so the report says the process view is unavailable and
+	// carries on with what the rows say.
+	var live map[string]string
+	var warn string
+	if in.Launcher != nil {
+		if live, err = in.Launcher.List(); err != nil {
+			live, warn = nil, "cannot see running agents: "+err.Error()
+		}
+	}
+	launches := newestLaunches(rows)
+
 	out := StatusReport{Projects: []ProjectStatus{}}
 	for _, scope := range sortedKeys(scopes) {
 		project, ok := memory.Project(scope)
@@ -146,16 +190,61 @@ func Status(s *memory.Store, in StatusInput) (StatusReport, error) {
 			if onlyTask != "" && task.Tid != onlyTask {
 				continue
 			}
-			entry.Tasks = append(entry.Tasks, statusOf(task, ix, now))
+			entry.Tasks = append(entry.Tasks, statusOf(task, ix, now, launches, live, in.Launcher != nil && warn == ""))
 		}
 		out.Projects = append(out.Projects, entry)
 	}
+	out.ProcessWarning = warn
 	return out, nil
+}
+
+// newestLaunches indexes the newest launch record per task, so a task launched
+// twice is described by the agent that is running now.
+func newestLaunches(rows []memory.Row) map[string]launchExtra {
+	out := map[string]launchExtra{}
+	for _, r := range rows {
+		if r.Kind != memory.KindLaunch {
+			continue
+		}
+		var ex launchExtra
+		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task == "" {
+			continue
+		}
+		if prev, ok := out[ex.Task]; !ok || ex.At.After(prev.At) {
+			out[ex.Task] = ex
+		}
+	}
+	return out
+}
+
+// processOf says what is running for a task. A task fs never launched reads
+// unknown, never gone: fs closes what it opened, and a pane somebody started by
+// hand is not fs's to judge — nor is a live agent that has simply stopped writing.
+func processOf(task string, launches map[string]launchExtra, live map[string]string, canSee bool) Process {
+	ex, ok := launches[task]
+	if !ok {
+		return Process{Status: ProcessUnknown}
+	}
+	at := ex.At.UTC()
+	p := Process{Pane: ex.Pane, Name: ex.Name, At: &at, Status: ProcessUnknown}
+	if !canSee {
+		return p
+	}
+	if status, alive := live[ex.Pane]; alive {
+		if status == StatusWorking {
+			p.Status = ProcessWorking
+		} else {
+			p.Status = ProcessIdle
+		}
+		return p
+	}
+	p.Status = ProcessGone
+	return p
 }
 
 // statusOf derives one task's state, who holds it, what was reported about it and
 // how stale each of those facts is.
-func statusOf(task Task, ix *memory.Index, now time.Time) TaskStatus {
+func statusOf(task Task, ix *memory.Index, now time.Time, launches map[string]launchExtra, live map[string]string, canSee bool) TaskStatus {
 	st := TaskStatus{
 		Task:        task.Tid,
 		Kind:        task.Kind,
@@ -164,6 +253,7 @@ func statusOf(task Task, ix *memory.Index, now time.Time) TaskStatus {
 		ProjectPath: task.ProjectPath,
 		ParentDev:   task.ParentDev,
 		State:       "open",
+		Process:     processOf(task.Tid, launches, live, canSee),
 	}
 	if task.done {
 		st.State = "done"

@@ -203,6 +203,87 @@ func TestStatusTableMarksAStaleReport(t *testing.T) {
 	}
 }
 
+// TestStatusTableShowsTheProcess: the PROCESS column is what the launcher said
+// about the agent fs started. Working, idle and gone are three different answers,
+// and "-" means fs launched nothing for the task — a pane somebody opened by hand,
+// which fs does not judge.
+func TestStatusTableShowsTheProcess(t *testing.T) {
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	task := func(id, status string) coord.TaskStatus {
+		return coord.TaskStatus{Task: id, Kind: "dev", State: "claimed",
+			Process: coord.Process{Status: status},
+			Agent:   coord.Observed{State: "unknown"},
+			Goal:    "goal " + id}
+	}
+	report := coord.StatusReport{Projects: []coord.ProjectStatus{{
+		Project: "p",
+		Tasks: []coord.TaskStatus{
+			task("t-working", coord.ProcessWorking),
+			task("t-idle", coord.ProcessIdle),
+			task("t-gone", coord.ProcessGone),
+			task("t-unlaunched", coord.ProcessUnknown),
+			task("t-unanswered", ""),
+		},
+	}}}
+	got := renderStatus(report, at)
+	if !strings.Contains(got, "PROCESS") {
+		t.Fatalf("table has no PROCESS column:\n%s", got)
+	}
+
+	want := map[string]string{
+		"t-working":    "working",
+		"t-idle":       "idle",
+		"t-gone":       "gone",
+		"t-unlaunched": "-",
+		"t-unanswered": "-",
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(got, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		status, ok := want[fields[0]]
+		if !ok {
+			continue
+		}
+		seen[fields[0]] = true
+		if len(fields) < 8 {
+			t.Errorf("row for %s is short: %q", fields[0], line)
+			continue
+		}
+		if got := fields[7]; got != status {
+			t.Errorf("PROCESS for %s = %q, want %q", fields[0], got, status)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("no row for %s:\n%s", id, got)
+		}
+	}
+}
+
+// TestStatusTableSaysWhenTheProcessViewIsUnavailable: a launcher that cannot answer
+// must not read as "gone". The table says why the cell is empty, so a silent agent
+// is never mistaken for a dead one.
+func TestStatusTableSaysWhenTheProcessViewIsUnavailable(t *testing.T) {
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	report := coord.StatusReport{
+		Projects: []coord.ProjectStatus{{Project: "p", Tasks: []coord.TaskStatus{{
+			Task: "t-1", Kind: "dev", State: "open", Goal: "g",
+			Process: coord.Process{Status: coord.ProcessUnknown},
+		}}}},
+		ProcessWarning: "cannot see running agents: herdr: no server",
+	}
+	got := renderStatus(report, at)
+	if !strings.Contains(got, "process shown as unknown") {
+		t.Errorf("table hides an unavailable process view:\n%s", got)
+	}
+	if !strings.Contains(got, "herdr: no server") {
+		t.Errorf("table drops the reason:\n%s", got)
+	}
+}
+
 // TestUsageExitsTwo: a malformed command line is a different answer from a refusal,
 // and a script can tell them apart by the exit code alone.
 func TestUsageExitsTwo(t *testing.T) {
