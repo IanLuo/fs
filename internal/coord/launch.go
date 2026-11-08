@@ -16,10 +16,11 @@ import (
 // never a retry, because a broken launcher retried is a room full of agents
 // burning tokens.
 //
-// List returns every live agent by pane, in one call. One call matters: a claim
+// List returns every live agent by pane, in one call. One call matters because a
+// status listing and a reap pass each ask about every agent they know: a claim
 // lease says whether an agent is *writing*, and silence is not death, so the only
-// way to tell a dead agent from a slow one is to ask the launcher — and asking once
-// per status keeps that affordable.
+// way to tell a dead agent from a slow one is to ask the launcher — once per
+// listing, not once per row.
 type Launcher interface {
 	Start(LaunchSpec) (Handle, error)
 	List() (map[string]string, error)
@@ -114,16 +115,9 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 		return DispatchResult{}, fmt.Errorf("task %s is held by session %s until %s: it is already being worked on",
 			task.Tid, held.Session, held.Expires().UTC().Format(time.RFC3339))
 	}
-	if prev, ok := latestLaunch(rows, task.Tid); ok {
-		// A row and a clock cannot tell a dead agent from a slow one. Ask.
-		live, err := l.List()
-		if err != nil {
-			return DispatchResult{}, fmt.Errorf("cannot see the agents already running (%w); refusing to start a second one for %s", err, task.Tid)
-		}
-		if status, alive := live[prev.Pane]; alive {
-			return DispatchResult{}, fmt.Errorf("task %s is already being worked on by session %s (agent %s, pane %s, %s); run fs reap or wait for it to finish",
-				task.Tid, prev.Session, prev.Name, prev.Pane, status)
-		}
+	if prev, ok := recentLaunch(rows, task.Tid, now); ok {
+		return DispatchResult{}, fmt.Errorf("task %s was dispatched to session %s %s ago and that agent has not produced a verdict yet; wait for its lease to lapse or run fs reap",
+			task.Tid, prev.Session, now.Sub(prev.At).Round(time.Second))
 	}
 	dir := strings.TrimSpace(in.Dir)
 	if dir == "" {
@@ -160,25 +154,23 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	}, nil
 }
 
-// latestLaunch returns the newest launch record for tid. What it is used for is
-// decided by the caller against the launcher, never against the clock: a lapsed
-// lease means the agent went silent, and silence is not death.
-func latestLaunch(rows []memory.Row, tid string) (launchExtra, bool) {
+// recentLaunch reports a launch for tid that is still young enough to be an agent
+// at work. It reads the record, not the pane: a double-clicked dispatch must be
+// refused even when the first agent has not claimed yet, and after the lease has
+// lapsed a new dispatch is the correct recovery.
+func recentLaunch(rows []memory.Row, tid string, now time.Time) (launchExtra, bool) {
 	var best launchExtra
 	var bestAt time.Time
 	for _, r := range rows {
-		if r.Kind != memory.KindLaunch {
-			continue
-		}
-		var ex launchExtra
-		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task != tid {
+		ex, ok := decodeLaunch(r)
+		if !ok || ex.Task != tid {
 			continue
 		}
 		if ex.At.After(bestAt) {
 			bestAt, best = ex.At, ex
 		}
 	}
-	if best.Session == "" {
+	if best.Session == "" || now.Sub(bestAt) >= memory.DefaultTTL {
 		return launchExtra{}, false
 	}
 	for _, r := range rows {
@@ -265,6 +257,23 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 		" --goal 'review " + task.Tid + "' --review-of " + task.Tid + ", then fs dispatch --project " + project +
 		" --task <the review task id>. You do not review your own work: the reviewer is a fresh session that runs the same checks.\n")
 	return b.String()
+}
+
+// decodeLaunch reads one launch row. There is one reader, because the record's
+// shape is the only thing dispatch, reap and status agree on: a second decoder is a
+// second definition, and they drift.
+func decodeLaunch(r memory.Row) (launchExtra, bool) {
+	if r.Kind != memory.KindLaunch {
+		return launchExtra{}, false
+	}
+	var ex launchExtra
+	if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil {
+		return launchExtra{}, false
+	}
+	if ex.Task == "" || ex.Session == "" {
+		return launchExtra{}, false
+	}
+	return ex, true
 }
 
 // launchExtra is a launch row's extra: what fs started, and as whom.
@@ -357,11 +366,8 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 		live, lerr := l.List()
 		if lerr != nil {
 			for _, r := range local {
-				if r.Kind != memory.KindLaunch {
-					continue
-				}
-				var ex launchExtra
-				if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task == "" || ex.Session == "" {
+				ex, ok := decodeLaunch(r)
+				if !ok {
 					continue
 				}
 				k := key{ex.Task, ex.Session}
@@ -375,11 +381,8 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 			continue
 		}
 		for _, r := range local {
-			if r.Kind != memory.KindLaunch {
-				continue
-			}
-			var ex launchExtra
-			if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil || ex.Task == "" || ex.Session == "" {
+			ex, ok := decodeLaunch(r)
+			if !ok {
 				continue
 			}
 			k := key{ex.Task, ex.Session}

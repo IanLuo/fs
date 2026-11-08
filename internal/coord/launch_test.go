@@ -159,49 +159,25 @@ func TestDispatchPinsTheStore(t *testing.T) {
 
 // TestDispatchRefusesASecondLaunch: a dispatch that runs twice — a double click, a
 // retried command — must not put two agents on one task. The first agent may not
-// have claimed yet, and after its lease lapses it may merely be silent, so the
-// launcher is asked. Only a gone process frees the task.
+// have claimed yet, so the launch record, not the claim, is what says so.
 func TestDispatchRefusesASecondLaunch(t *testing.T) {
 	s, now := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
-	first, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
-		t.Fatal("dispatched the same task twice while the first agent is running")
-	}
-
-	// Silence is not death: a lapsed lease with a live process still refuses.
-	*now = now.Add(2 * memory.DefaultTTL)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
-		t.Fatal("dispatched over an agent whose lease lapsed but whose process is alive")
-	}
-
-	// A process that is gone frees the task: that is the recovery path.
-	delete(fake.status, first.Pane)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
-		t.Fatalf("re-dispatch after the agent died: %v", err)
-	}
-}
-
-// TestDispatchRefusesWhenItCannotSee: if the launcher cannot answer, fs does not
-// guess. Starting a second agent for a task that might already have one is worse
-// than refusing.
-func TestDispatchRefusesWhenItCannotSee(t *testing.T) {
-	s, _ := open(t)
-	task := add(t, s, "p")
-	fake := &fakeLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	fake.listErr = errLauncher{}
 	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
-		t.Fatal("dispatched while the launcher was unreadable")
+		t.Fatal("dispatched the same task twice while the first agent is young")
 	}
 	if len(fake.started) != 1 {
-		t.Errorf("started %d agents, want 1", len(fake.started))
+		t.Fatalf("started %d agents, want 1", len(fake.started))
+	}
+	// After the lease the recovery is a new dispatch, which is how a dead round is
+	// replaced.
+	*now = now.Add(2 * memory.DefaultTTL)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+		t.Fatalf("re-dispatch after the lease lapsed: %v", err)
 	}
 }
 
