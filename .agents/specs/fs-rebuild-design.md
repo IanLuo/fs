@@ -1,4 +1,4 @@
-<!-- specs:locked:9c50bbe 2026-11-08 type=system-design -->
+<!-- specs:locked:545e3ba 2026-11-08 type=system-design -->
 
 ## Link contract
 - **upstream** (this doc relies on): .agents/specs/fs-rebuild.md
@@ -53,11 +53,11 @@
 - **Who owns time.** fs computes liveness from row timestamps against one host clock. Two hosts would need a different rule; V1 is one host, stated as an assumption rather than discovered later.
 - **fs → harness.** The harness supplies `--session <stable-id>` and a worktree path; a claim without a session is refused. An initiator may instead ask fs to start the agent (`fs dispatch`), and then fs mints the identity and hands it over.
 - **The dispatch protocol, and why it is three steps not two.** `fs dispatch`:
-  1. **Read only.** Does the task exist, is it closed, does a live claim hold it, was a young launch already made for it, is there a directory to work in? Every refusal happens here, so a typo cannot leave an orphan process.
+  1. **Read only.** Does the task exist, is it closed, does a live claim hold it, is the agent already launched for it still running, is there a directory to work in? Every refusal happens here, so a typo cannot leave an orphan process. "Still running" is answered by the launcher, never by the launch time: a lapsed lease means the session stopped writing, and silence is not death.
   2. **Start one agent.** One launcher call. A failure is reported and not retried, because a broken launcher retried is a room full of agents burning tokens.
   3. **Record the launch.** Kind, pane, name, directory, time and the minted session id. If this write fails, the agent is closed again: a process fs cannot account for is exactly what reap exists to prevent.
   The agent then claims itself with the identity in its prompt. fs starts the process; fs does not claim on its behalf, so the bind stays the agent's own write.
-- **Reap closes a round, never a worker.** A launch's round is over when the task is closed, when this session's newest review verdict is `fail` or `blocked`, or when its lease has lapsed. An agent herdr calls working is never closed; an agent herdr no longer lists is already gone; a pane with no launch row is never touched. Closing is an action, not a fact, so reap writes no row and stays idempotent.
+- **Reap closes a round, never a worker.** A launch's round is over when the task is closed, when this session's newest word is a `fail`/`blocked` verdict, or when its lease has lapsed and it holds nothing. A live claim outranks an older verdict, because a reviewer refused after a lapse re-claims for the next round with the same session id — its previous `fail` is then history, not a reason to close the pane under it. An agent herdr calls working is never closed; an agent herdr no longer lists is already gone; a pane with no launch row is never touched. Closing is an action, not a fact, so reap writes no row and stays idempotent.
 - **The prompt is fs's, not the harness's.** It carries the store (`MEMSTORE_DB`), because a pane inherits the launcher's environment and not the caller's — without it fs starts an agent that claims in a different store. It carries every declared check for a reviewer and the round's ending for both roles.
 - **Harness → fs: runtime status.** A harness that can observe process lifecycle reports it as `fs.event` with `role=runtime`. A harness that cannot leaves it absent, and absence reads as `unknown` — never as alive.
 - **fs → reviewer.** The review input is assembled from the task row, the diff and the development task's `fs.event` rows — a fixed field list, not a transcript. Independence is a data shape, not an instruction.
