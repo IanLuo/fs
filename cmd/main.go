@@ -99,14 +99,14 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run parses one invocation and returns its exit code. It is a function rather
-// than a body in main so the envelopes and the exit codes can be tested without
-// starting a process.
 // launcher is the process view every verb uses. It is a variable so a cmd test can
 // answer without running the host's herdr: a test that shells out to whatever is
 // installed tests the machine, not fs.
 var launcher coord.Launcher = launch.Herdr{}
 
+// run parses one invocation and returns its exit code. It is a function rather
+// than a body in main so the envelopes and the exit codes can be tested without
+// starting a process.
 func run(args []string, stdout, stderr io.Writer) int {
 	args, verbose := stripVerbose(args)
 
@@ -265,9 +265,6 @@ func doneCmd(args []string) (any, error) {
 	return coord.Done(s, coord.DoneInput{Project: *project, Session: *session, Task: *task, Note: *note})
 }
 
-// statusCmd answers what fs knows, from rows alone. The default answer is the JSON
-// envelope every other verb prints; --format table is the same answer laid out for
-// a human, so nobody has to read JSON to see who is on what.
 func dispatchCmd(args []string) (any, error) {
 	fs := newFlags("dispatch")
 	project := fs.String("project", "", "the project scope the task lives in")
@@ -308,6 +305,9 @@ func reapCmd(args []string) (any, error) {
 	return coord.Reap(s, coord.ReapInput{Project: *project}, launcher)
 }
 
+// statusCmd answers what fs knows, from rows alone. The default answer is the JSON
+// envelope every other verb prints; --format table is the same answer laid out for
+// a human, so nobody has to read JSON to see who is on what.
 func statusCmd(args []string) (any, error) {
 	fs := newFlags("status")
 	project := fs.String("project", "", "one project; omit for every project")

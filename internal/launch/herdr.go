@@ -25,7 +25,12 @@ type Herdr struct {
 // run is the seam the tests replace. It returns stdout.
 var run = func(bin string, args ...string) ([]byte, error) {
 	cmd := exec.Command(bin, args...) // #nosec G204 -- bin is fs's own launcher, args are fs's own words
-	return cmd.Output()
+	out, err := cmd.Output()
+	if _, ok := err.(*exec.ExitError); ok && len(out) > 0 {
+		// herdr writes its refusal to stdout as JSON; exec's own error text omits it.
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return out, err
 }
 
 func (h Herdr) bin() string {
@@ -129,10 +134,8 @@ func (h Herdr) Close(handle coord.Handle) error {
 	return nil
 }
 
-// isGone recognises the "no such pane" family without parsing herdr's wording
-// more finely than needed: a close that fails because the pane is absent has
-// already achieved what it was asked to do.
+// isGone recognises herdr's pane_not_found refusal. A close that fails because the
+// pane is absent has already achieved what it was asked to do.
 func isGone(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found") || strings.Contains(msg, "no such") || strings.Contains(msg, "unknown pane")
+	return strings.Contains(err.Error(), "pane_not_found")
 }

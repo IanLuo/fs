@@ -110,8 +110,20 @@ func TestListReadsHerdsAnswerOnce(t *testing.T) {
 // TestCloseToleratesAGonePane: closing twice is not an error, so reap can run as
 // often as anyone likes.
 func TestCloseToleratesAGonePane(t *testing.T) {
-	stub(t, nil, map[string]error{"pane close w1:p9": errors.New("pane not found")})
+	stub(t, nil, map[string]error{"pane close w1:p9": errors.New(`exit status 1: {"error":{"code":"pane_not_found","message":"pane w1:p9 not found"}}`)})
 	if err := (Herdr{}).Close(coord.Handle{Pane: "w1:p9"}); err != nil {
 		t.Errorf("closing a gone pane: %v", err)
+	}
+}
+
+// TestRunKeepsHerdrsRefusal: exec's error text omits stdout, where herdr writes its
+// refusal. The real runner must carry that body, or isGone can never see it.
+func TestRunKeepsHerdrsRefusal(t *testing.T) {
+	_, err := run("sh", "-c", `echo '{"error":{"code":"pane_not_found"}}'; exit 1`)
+	if err == nil || !strings.Contains(err.Error(), "pane_not_found") {
+		t.Fatalf("run error = %v, want herdr's refusal in it", err)
+	}
+	if !isGone(err) {
+		t.Errorf("a real pane_not_found refusal is not recognised as gone: %v", err)
 	}
 }
