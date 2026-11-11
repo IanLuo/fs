@@ -22,12 +22,19 @@ fs report --project P --session S --task TID --state S [--role dev|review|runtim
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
 fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+fs path   --project P --path DIR
 fs reap   [--project P]
 fs status [--project P] [--session S] [--format json|table]
 ```
 
 `--path` is resolved when the task is written, so `--path .` records the directory you ran
 it from, not a dot that means whatever directory the reader stands in.
+
+`fs path` records where a project's work runs from now on, as a new row: a repository
+that moved is one command, and no task row changes. Dispatch resolves its directory in
+this order — `--dir`, then the project's newest `fs path` binding, then the task's own
+recorded path — and refuses before starting anything when the answer is not an existing
+directory, naming the task and the path.
 
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`.
 
@@ -84,7 +91,8 @@ What each verb writes:
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; this write is also the keepalive |
 | `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why |
-| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder and a duplicate start; a launcher failure is a refusal, never a retry |
+| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start and a directory that is not there; a launcher failure is a refusal, never a retry |
+| `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
 | `status` | nothing | derived from rows on every call |
 
@@ -95,6 +103,9 @@ task and returns. There is no retry, no restart-on-crash and no fallback launche
 
 ```text
 read only ──► refuse if: task closed · live holder · its agent still running · no directory
+     │                                                    (--dir, else fs path, else
+     │                                                     the task's own path — and it
+     │                                                     must be an existing directory)
      │
      ▼
 start one agent (one launcher call) ──► failure = refusal, nothing else happens
@@ -110,6 +121,10 @@ The agent gets a prompt that names the store (`MEMSTORE_DB`), the session id to
 claim as, and every declared check — because a new pane inherits the launcher's
 environment, not the caller's. A reviewer is told to run the checks and report the
 real exit codes; a developer is told to create its review and dispatch it.
+
+`fs path --project P --path DIR` is how a project moves. The binding is appended to the
+project's own scope and the newest one wins, so dispatch follows it without a task row
+being rewritten, and `fs status` reports the directory each project would dispatch into.
 
 "Still running" is asked of the launcher, never inferred from a clock: a lapsed lease
 means the session stopped writing, not that its process ended.
@@ -175,7 +190,7 @@ view:
 $ fs status --format table
 2 projects, 3 tasks · 2 open · 1 claimed
 
-demo
+demo  /Users/me/src/demo
   TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      PROCESS  GOAL
   t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   working  add lease-expiry tests
   t-f64fa63ac1ddac3e  dev     open     -                 -      -         unknown    -        a goal long enough to be cut off…
@@ -183,6 +198,9 @@ demo
 3 projects with no tasks: 3d-house, ann, cap
 ```
 
+- The line under each project names the directory its next dispatch starts in: its newest
+  `fs path` binding. A project with no binding shows its name alone, and each task's own
+  `project_path` decides. The JSON carries it as `dir` on the project.
 - `HOLDER`/`ROUND` are who holds the task and which claim attempt that is; `-` means nobody
   holds it.
 - `LEASE` is what the holder has left before it must write again; `lapsed` frees the task for

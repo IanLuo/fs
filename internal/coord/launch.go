@@ -55,7 +55,7 @@ type DispatchInput struct {
 	Project string
 	Task    string
 	Kind    string // default pi
-	Dir     string // default: the task's recorded project_path
+	Dir     string // default: --dir, then the newest fs path binding, then the task's path
 }
 
 // DispatchResult is what was started, and as whom.
@@ -127,12 +127,9 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 				task.Tid, prev.Session, prev.Name, prev.Pane, status)
 		}
 	}
-	dir := strings.TrimSpace(in.Dir)
-	if dir == "" {
-		dir = task.ProjectPath
-	}
-	if dir == "" {
-		return DispatchResult{}, fmt.Errorf("%s records no path; pass --dir so the agent knows where the work is", task.Tid)
+	dir, err := resolveDir(in.Dir, rows, task, in.Project)
+	if err != nil {
+		return DispatchResult{}, err
 	}
 
 	sid := dispatchSession(task.Tid, now)

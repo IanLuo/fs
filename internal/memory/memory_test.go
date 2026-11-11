@@ -43,6 +43,17 @@ func TestKeysRoundTrip(t *testing.T) {
 	if round, ok := memory.ParseRound(memory.ClaimKey("t-1", 3)); !ok || round != 3 {
 		t.Errorf("round = %d/%v, want 3", round, ok)
 	}
+	// A path key names a project and an append index, and nothing a task or a
+	// session could mistake for its own.
+	if n, ok := memory.ParsePathIndex(memory.PathKey("p", 2)); !ok || n != 2 {
+		t.Errorf("path index = %d/%v, want 2", n, ok)
+	}
+	if tid, ok := memory.ParseTask(memory.PathKey("p", 1)); ok || tid != "" {
+		t.Errorf("a path key named task %q", tid)
+	}
+	if sid, ok := memory.ParseSession(memory.PathKey("p", 1)); ok || sid != "" {
+		t.Errorf("a path key named session %q", sid)
+	}
 	// A claim key must not name a session: every racer has to build the same one.
 	if sid, ok := memory.ParseSession(memory.ClaimKey("t-1", 1)); ok || sid != "" {
 		t.Errorf("a claim key named session %q; two racers would then build different keys", sid)

@@ -128,7 +128,7 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 		if len(p.Tasks) == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s\n", p.Project)
+		fmt.Fprintf(&b, "\n%s\n", projectHeader(p.Project, p.Dir))
 		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
 			colTask, "TASK", colKind, "KIND", colState, "STATE", colHold, "HOLDER",
 			colRound, "ROUND", colLease, "LEASE", colAgent, "AGENT", colProc, "PROCESS", "GOAL")
@@ -164,13 +164,23 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 	var empty []string
 	for _, p := range r.Projects {
 		if len(p.Tasks) == 0 {
-			empty = append(empty, p.Project)
+			empty = append(empty, projectHeader(p.Project, p.Dir))
 		}
 	}
 	if len(empty) > 0 {
 		fmt.Fprintf(&b, "\n%s with no tasks: %s\n", plural(len(empty), "project"), strings.Join(empty, ", "))
 	}
 	return b.String()
+}
+
+// projectHeader is a project and the directory it dispatches into, so a reader
+// never has to guess which checkout the next dispatch would start in. A project
+// with no binding shows its name alone: then each task's own path decides.
+func projectHeader(project, dir string) string {
+	if dir == "" {
+		return project
+	}
+	return project + "  " + dir
 }
 
 // holder is who holds the task, or "-" when nobody does.

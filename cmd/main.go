@@ -1,4 +1,4 @@
-// Package main is the `fs` command: seven verbs over shared memstore, and no
+// Package main is the `fs` command: eight verbs over shared memstore, and no
 // policy of its own.
 //
 // This layer owns flags, the JSON envelope and the exit codes. Every decision —
@@ -52,6 +52,11 @@ var helpBlocks = []struct{ name, block string }{
                                      over: task closed, review verdict recorded,
                                      or lease lapsed. Working agents are left
                                      alone, and so is every pane fs did not open.`},
+	{"path", `  fs path   --project P --path DIR
+                                     Record where this project's work runs from
+                                     now on. Appended, newest wins: a moved
+                                     repository is one command, and no task row
+                                     changes.`},
 	{"status", `  fs status [--project P] [--session S] [--format json|table]
                                      What fs knows. A session sees only what its
                                      binding authorizes; the user sees every
@@ -66,7 +71,7 @@ const usageNotes = `States: progress, dev-done, pass, fail, blocked.
 The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
 `
 
-// usageText is the whole interface: seven verbs and nothing else.
+// usageText is the whole interface: eight verbs and nothing else.
 func usageText() string {
 	var b strings.Builder
 	b.WriteString("Usage: fs <command> [flags]\n\n")
@@ -133,6 +138,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		data, err = doneCmd(rest)
 	case "dispatch":
 		data, err = dispatchCmd(rest)
+	case "path":
+		data, err = pathCmd(rest)
 	case "reap":
 		data, err = reapCmd(rest)
 	case "status":
@@ -287,6 +294,26 @@ func dispatchCmd(args []string) (any, error) {
 	return coord.Dispatch(s, coord.DispatchInput{
 		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
 	}, launcher)
+}
+
+// pathCmd binds a project to a directory. It appends, so a repository that moved
+// is one command: dispatch resolves the newest binding before a task's own path,
+// and no task row is touched.
+func pathCmd(args []string) (any, error) {
+	fs := newFlags("path")
+	project := fs.String("project", "", "the project scope the directory belongs to")
+	path := fs.String("path", "", "the directory this project's work runs in; made absolute")
+	if err := parse(fs, args); err != nil {
+		return nil, err
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+
+	return coord.SetPath(s, coord.PathInput{Project: *project, Path: *path})
 }
 
 func reapCmd(args []string) (any, error) {

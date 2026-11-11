@@ -84,10 +84,15 @@ type TaskStatus struct {
 	Evidence     []Evidence `json:"evidence,omitempty"`
 }
 
-// ProjectStatus is one project's tasks.
+// ProjectStatus is one project's tasks, and where its work runs.
 type ProjectStatus struct {
-	Project string       `json:"project"`
-	Tasks   []TaskStatus `json:"tasks"`
+	Project string `json:"project"`
+	// Dir is the directory a dispatch for this project would start in: its newest
+	// `fs path` binding, or empty when the project never recorded one and each task
+	// falls back to its own path. It is read from the rows on every call, so a
+	// binding is never a cached answer a reader could see out of date.
+	Dir   string       `json:"dir,omitempty"`
+	Tasks []TaskStatus `json:"tasks"`
 }
 
 // StatusReport is the answer to a status question: one entry per project in view.
@@ -184,7 +189,7 @@ func Status(s *memory.Store, in StatusInput) (StatusReport, error) {
 		if !ok {
 			continue
 		}
-		entry := ProjectStatus{Project: project, Tasks: []TaskStatus{}}
+		entry := ProjectStatus{Project: project, Dir: projectDir(byScope[scope]), Tasks: []TaskStatus{}}
 		for _, task := range allTasks(byScope[scope]) {
 			if onlyTask != "" && task.Tid != onlyTask {
 				continue

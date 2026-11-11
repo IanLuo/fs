@@ -142,6 +142,16 @@ func (s *Store) PutClaim(scope, tid, sid string, round int) error {
 	return s.put(scope, KindClaim, ClaimKey(tid, round), line, line, string(extra))
 }
 
+// PutPath appends one project-level directory binding: where this project's work
+// runs now. The index makes each write a new row, so a binding is appended and
+// the newest one wins — there is no update verb and no row to rewrite.
+func (s *Store) PutPath(scope, project string, n int, text, extra string) error {
+	if text == "" {
+		text = "path"
+	}
+	return s.put(scope, KindPath, PathKey(project, n), text, text, extra)
+}
+
 // PutLaunch appends the record that fs started an agent for tid under sid: what
 // kind, its pane, and the directory it works in. The row is the reason fs may
 // later close that pane and never another: it closes what it opened.

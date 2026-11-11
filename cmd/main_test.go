@@ -89,7 +89,7 @@ func okData(t *testing.T, code int, env map[string]any) map[string]any {
 // must describe that verb rather than the whole interface.
 func TestHelpExitsZero(t *testing.T) {
 	scratch(t)
-	verbs := []string{"add", "claim", "report", "done", "status"}
+	verbs := []string{"add", "claim", "report", "done", "dispatch", "reap", "path", "status"}
 
 	// Top-level help names every verb and describes none of them alone.
 	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}} {
@@ -506,5 +506,80 @@ func TestStatusShowsTheProcessViewFromTheLauncher(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "gone") {
 		t.Errorf("a finished agent does not read gone:\n%s", stdout.String())
+	}
+}
+
+// TestPathMovesTheProjectWithoutTouchingATask: one command re-points the project,
+// the next dispatch starts in the new directory, and the task row still records
+// where it was written down. Status shows the directory the project would dispatch
+// into, in both views.
+func TestPathMovesTheProjectWithoutTouchingATask(t *testing.T) {
+	scratch(t)
+	old, moved := t.TempDir(), t.TempDir()
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true", "--path", old)["task"].(string)
+
+	bound := mustOK(t, "path", "--project", "p", "--path", moved)
+	if bound["project"] != "p" || bound["path"] != moved {
+		t.Fatalf("path = %v, want p in %s", bound, moved)
+	}
+
+	started := mustOK(t, "dispatch", "--project", "p", "--task", tid)
+	if started["dir"] != moved {
+		t.Errorf("dispatched into %v, want the project binding %s", started["dir"], moved)
+	}
+
+	status := mustOK(t, "status", "--project", "p")
+	project := status["projects"].([]any)[0].(map[string]any)
+	if project["dir"] != moved {
+		t.Errorf("status dir = %v, want %s", project["dir"], moved)
+	}
+	if got := project["tasks"].([]any)[0].(map[string]any)["project_path"]; got != old {
+		t.Errorf("task path = %v, want the recorded %s: a move touches no task row", got, old)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"status", "--project", "p", "--format", "table"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), moved) {
+		t.Errorf("table does not show the directory the project dispatches into:\n%s", stdout.String())
+	}
+}
+
+// TestDispatchRefusesADeadPathThroughTheCLI: the refusal is one JSON answer naming
+// the task and the path, and no agent is started — the pane list stays empty.
+func TestDispatchRefusesADeadPathThroughTheCLI(t *testing.T) {
+	scratch(t)
+	stub := launcher.(*stubLauncher)
+	dead := filepath.Join(t.TempDir(), "gone")
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true", "--path", dead)["task"].(string)
+
+	code, env := invoke(t, "dispatch", "--project", "p", "--task", tid)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: %v", code, env)
+	}
+	msg, _ := env["error"].(string)
+	if !strings.Contains(msg, tid) || !strings.Contains(msg, dead) || strings.Contains(msg, "\n") {
+		t.Errorf("refusal = %q, want one line naming the task and the path", msg)
+	}
+	if len(stub.panes) != 0 {
+		t.Errorf("a pane was started for a dead path: %v", stub.panes)
+	}
+}
+
+// TestPathRefusalsExitOne: a binding with no project or no directory is refused
+// without writing anything.
+func TestPathRefusalsExitOne(t *testing.T) {
+	scratch(t)
+	for _, args := range [][]string{
+		{"path", "--project", "p"},
+		{"path", "--path", t.TempDir()},
+	} {
+		if code, env := invoke(t, args...); code != 1 || env["ok"] != false {
+			t.Errorf("fs %v: exit %d %v, want a refusal", args, code, env)
+		}
+	}
+	if projects := mustOK(t, "status")["projects"].([]any); len(projects) != 0 {
+		t.Fatalf("%d projects exist after every path was refused: %v", len(projects), projects)
 	}
 }

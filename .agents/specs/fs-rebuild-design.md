@@ -16,7 +16,7 @@
 
 ## R2 Data model
 - Every fs row lives in `scope = "fs:<project>"`, with `origin = "fs"` and `origin_id` = its coordination key. No other scope is read or written.
-- **Five kinds, one job each:**
+- **Six kinds, one job each:**
 
 | kind | the row asserts | `origin_id` | `extra` |
 |---|---|---|---|
@@ -27,6 +27,7 @@
 | `fs.claim` | this task is held at round N | `claim:<tid>:<n>` | task, session, round, ttl_s |
 | `fs.event` | something happened | `ev:<tid>:<sid>:<n>` | state, role, command, exit, digest, note |
 | `fs.launch` | fs started this agent | `launch:<tid>:<sid>` | task, session, kind, role, pane, name, dir, at |
+| `fs.path` | this project's work runs here now | `path:<project>:<n>` | project, path |
 
 - **`fs.bind` exists to be refused.** It is written once per session, before any claim, so a second task for that session fails on memstore's own unique index. A session is spent by construction, not by remembering to check.
 - **`fs.claim` exists to be refused for the same reason.** `claim:<tid>:<n>` is a key every racer computes identically, so exactly one insert wins and the loser is told by `ErrDuplicateOrigin`.
@@ -35,6 +36,8 @@
 - **A report is the record.** status returns every report a task carries, newest first and bounded, whatever role wrote it: a development report's note and digest are what a session taking over reads to find where the work stopped, and a review run is what closed it. Context does not survive a dead session; a report does, because the row outlives the process. No transcript exists, so none is reported.
 - **A launch record is a fact, not a lock.** It is written once, grants nothing and expires never. It exists because closing a pane is only safe when there is a record that fs opened it: without the row, "close the agent for this task" means "close whatever is in this pane", and the row is also what makes reap idempotent — the record stays, the process does not. The launch also records the session identity fs minted, so an agent that never claims is still attributable.
 - **The keepalive is any write.** `fs report` is the heartbeat; there is no separate renew verb and no separate heartbeat row.
+- **A project location is appended, never updated.** `fs path` writes one row per call, in the project's own scope, and the newest wins by timestamp and then by append index. Without it a repository that moved would need every task row rewritten, when the only fact that changed is the project's directory. Dispatch resolves `--dir`, then this binding, then the task's own `project_path`, and refuses before starting anything when the answer is not an existing directory.
+- **Locations are checked where they are used.** A recorded path is a fact about write time; whether it still exists is a question for the reader. Dispatch asks it once, before a process exists, and names the task and the path — an answer `fork/exec` cannot give.
 - **Completion is terminal.** `fs done` closes the task row via `CloseMemory`; a closed task is never reopened. Re-work is a new task.
 - **Empty record refused before writing:** no goal, no project scope, no declared check, no session identity.
 - **Rejected:** caching derived state, a local index, a second store, direct SQL, an fs-owned schema.
@@ -86,7 +89,7 @@
 - No import, migration, archival or re-entry of `~/.fs/store.db`.
 - No copying of project state or history out of memstore.
 - No new memstore API. If the claim protocol ever appears to need one, the first question is whether the protocol is wrong.
-- Seven verbs total: `add`, `claim`, `report`, `done`, `dispatch`, `reap`, `status`.
+- Eight verbs total: `add`, `claim`, `report`, `done`, `dispatch`, `path`, `reap`, `status`.
 
 ## R7 Structure — layers, tree, and the delete list
 - **Folded deliberately.** The architecture rung (layers, repo tree, cross-cutting) lives here rather than in a third document: the rebuild is one product, and a reader who needs three pages to learn it will read one. `fs-rebuild.md` is the contract; this page is the whole structure.
@@ -122,7 +125,7 @@ fs/                        this repository — the tool, not a consumer of it
 - **Cross-cutting conventions (one line each, so a new component obeys without a manual):**
   - *Errors:* `{"ok":false,"error":"…"}` with exit 1; a malformed command line exits 2; every failure path is fail-closed.
   - *Logging:* `internal/logging` is reused unchanged, writes ids and counts only, never task text, and never gates a decision.
-  - *Scope and keys:* the `fs:` scope prefix and the `session:`/`claim:`/`ev:`/`task:` key prefixes are constants in `internal/memory`; nothing else formats one.
+  - *Scope and keys:* the `fs:` scope prefix and the `session:`/`claim:`/`ev:`/`task:`/`launch:`/`path:` key prefixes are constants in `internal/memory`; nothing else formats one.
   - *Time:* read through one function in `internal/memory`, against the single host clock.
   - *Tests:* the barrier test and the "no read-then-write" test sit beside the claim protocol, because that is the invariant they defend.
   - *Legacy data:* no code path references `~/.fs/store.db`. Its absence is enforced by the delete list, not by discipline.

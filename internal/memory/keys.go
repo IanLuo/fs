@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// The five row kinds, and the five key prefixes. One prefix per kind because
+// The six row kinds, and the six key prefixes. One prefix per kind because
 // memstore's unique index is one key wide: `session:<sid>` is what makes a
 // session spent, `claim:<tid>:<n>` is what makes a task held, and collapsing
 // them into one row would silently drop one of the two invariants.
@@ -14,12 +14,17 @@ import (
 // once, it never expires, and what it records is who fs told to do the work and
 // where. Without it fs could not tell a round it opened from one it never
 // opened, and closing a pane would mean closing somebody else's.
+//
+// A path row is a fact about where a project's work runs. It is appended like a
+// launch row and never rewritten: a repo that moves is one new binding, and the
+// newest one wins, so no task row is touched.
 const (
 	KindTask   = "fs.task"
 	KindBind   = "fs.bind"
 	KindClaim  = "fs.claim"
 	KindEvent  = "fs.event"
 	KindLaunch = "fs.launch"
+	KindPath   = "fs.path"
 )
 
 const (
@@ -28,6 +33,7 @@ const (
 	prefixClaim   = "claim"
 	prefixEvent   = "ev"
 	prefixLaunch  = "launch"
+	prefixPath    = "path"
 )
 
 // TaskKey is the key of a task row.
@@ -54,6 +60,14 @@ func LaunchKey(tid, sid string) string {
 // so a session's reports append instead of colliding.
 func EventKey(tid, sid string, n int) string {
 	return prefixEvent + ":" + tid + ":" + sid + ":" + strconv.Itoa(n)
+}
+
+// PathKey is the key of one project-level directory binding. The project is in
+// the key as well as the scope because memstore's unique index is one key wide:
+// two projects appending `path:1` would otherwise collide. The index makes each
+// write a new row, so the binding appends rather than being rewritten.
+func PathKey(project string, n int) string {
+	return prefixPath + ":" + project + ":" + strconv.Itoa(n)
 }
 
 // ParseTask returns the task a key belongs to: a task key names its task, a
@@ -100,6 +114,20 @@ func ParseRound(key string) (int, bool) {
 		return 0, false
 	}
 	return round, true
+}
+
+// ParsePathIndex returns the append index a path key carries, which is what
+// orders two bindings written under the same clock reading.
+func ParsePathIndex(key string) (int, bool) {
+	p := strings.Split(key, ":")
+	if len(p) != 3 || p[0] != prefixPath {
+		return 0, false
+	}
+	n, err := strconv.Atoi(p[2])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // ParseEventIndex returns the per-session report index an event key carries.
