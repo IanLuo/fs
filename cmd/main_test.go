@@ -238,6 +238,30 @@ func TestStatusTableMarksAStaleReport(t *testing.T) {
 	}
 }
 
+// TestStatusTableShowsARefusalNotAFailure: a completion refusal is its own state,
+// so the human view says "refused" instead of telling an operator that a passing
+// review failed.
+func TestStatusTableShowsARefusalNotAFailure(t *testing.T) {
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	report := coord.StatusReport{Projects: []coord.ProjectStatus{{
+		Project: "p",
+		Tasks: []coord.TaskStatus{{
+			Task: "t-1", Kind: "review", State: "claimed", Session: "s-rev", Round: 1,
+			Goal:  "review t-0",
+			Agent: coord.Observed{State: "refused", Reported: "refused", Fresh: true, Role: "review"},
+		}},
+	}}}
+	got := renderStatus(report, at)
+	if !strings.Contains(got, "refused") {
+		t.Errorf("table does not show the refusal:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "t-1") && strings.Contains(line, "fail") {
+			t.Errorf("table renders a refusal as a failure:\n%s", line)
+		}
+	}
+}
+
 // TestStatusTableShowsTheProcess: the PROCESS column is what the launcher said
 // about the agent fs started. Working, idle and gone are three different answers,
 // and "-" means fs launched nothing for the task — a pane somebody opened by hand,

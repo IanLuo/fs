@@ -489,3 +489,46 @@ func TestReapKeepsAReviewerThatReclaimed(t *testing.T) {
 		}
 	}
 }
+
+// TestReapDoesNotReadACompletionRefusalAsAVerdict: the gate declining to close
+// writes `refused`, not `fail`. That is not a verdict, so reap never ends the round
+// on it; once the lease lapses the pane closes for the lease, with no verdict named.
+func TestReapDoesNotReadACompletionRefusalAsAVerdict(t *testing.T) {
+	s, now := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	fake := &fakeLauncher{}
+	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coord.Claim(s, coord.ClaimInput{Project: "p", Session: got.Session, Task: review.Tid}); err != nil {
+		t.Fatal(err)
+	}
+	// No run of the declared check: the gate refuses and records a refusal.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: got.Session, Task: review.Tid}); err == nil {
+		t.Fatal("completion passed with no reviewer-run check")
+	}
+	fake.status[got.Pane] = coord.StatusIdle
+	*now = now.Add(2 * memory.DefaultTTL) // the refusal's own write no longer keeps the claim
+
+	res, err := coord.Reap(s, coord.ReapInput{Project: "p"}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	for _, c := range append(res.Closed, res.Kept...) {
+		if c.Task != review.Tid {
+			continue
+		}
+		seen = true
+		if strings.Contains(c.Reason, "round ended") {
+			t.Fatalf("a completion refusal was read as a verdict: %+v", c)
+		}
+	}
+	if !seen {
+		t.Fatalf("reap said nothing about the review: %+v", res)
+	}
+	assertOpen(t, s, review.Tid)
+}

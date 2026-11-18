@@ -85,7 +85,7 @@ func TestDoneRefusesAFailingCheck(t *testing.T) {
 			continue
 		}
 		for _, ev := range task.Evidence {
-			if ev.State == "fail" && ev.Command == "" && strings.Contains(ev.Note, "completion refused") {
+			if ev.State == "refused" && ev.Role == "review" && ev.Command == "" && strings.Contains(ev.Note, "completion refused") {
 				found = true
 			}
 		}
@@ -93,6 +93,88 @@ func TestDoneRefusesAFailingCheck(t *testing.T) {
 	if !found {
 		t.Fatal("the refusal was not recorded on the review task")
 	}
+}
+
+// TestCompletionRefusalIsNotAVerdict: the gate declining to close is not a
+// reviewer's judgement that a check failed. It is recorded as `refused`, the task
+// stays open, and a later recorded run still closes it as pass.
+func TestCompletionRefusalIsNotAVerdict(t *testing.T) {
+	s, dev, review := reviewFixture(t)
+
+	// No reviewer run of the declared check: the gate declines to close.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err == nil {
+		t.Fatal("completion passed with no reviewer-run check")
+	}
+	assertOpen(t, s, dev.Tid)
+	assertOpen(t, s, review.Tid)
+
+	// A reader must see a refusal, not a verdict: the newest word on the review is
+	// `refused`, with the reviewer role and the reason.
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got coord.TaskStatus
+	for _, task := range st.Projects[0].Tasks {
+		if task.Task == review.Tid {
+			got = task
+		}
+	}
+	if got.Agent.State != "refused" || got.Agent.Role != "review" {
+		t.Fatalf("agent = %+v, want the reviewer's refusal, not a verdict", got.Agent)
+	}
+	if len(got.Evidence) == 0 || got.Evidence[0].State != "refused" {
+		t.Fatalf("evidence = %+v, want the refusal as the newest word", got.Evidence)
+	}
+
+	// The same reviewer runs the check and completes: the round closes as pass.
+	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+	result, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid})
+	if err != nil {
+		t.Fatalf("a recorded run did not let completion through: %v", err)
+	}
+	if result.Dev != dev.Tid || result.Review != review.Tid {
+		t.Fatalf("result = %+v, want both tasks closed", result)
+	}
+	for _, r := range rows(t, s, "p") {
+		if r.Kind == memory.KindTask && (r.Task() == dev.Tid || r.Task() == review.Tid) && !r.Closed {
+			t.Fatalf("task %s is not closed after the recorded run", r.Task())
+		}
+	}
+}
+
+// TestReviewFailIsStillAVerdict is the mirror of the refusal case: a genuine
+// reviewer failure keeps its own state, reads as a verdict, and leaves the
+// development task open.
+func TestReviewFailIsStillAVerdict(t *testing.T) {
+	s, dev, review := reviewFixture(t)
+	report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
+		State: "fail", Note: "the parser misses empty input",
+	})
+	assertOpen(t, s, dev.Tid)
+	assertOpen(t, s, review.Tid)
+
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got coord.TaskStatus
+	for _, task := range st.Projects[0].Tasks {
+		if task.Task == review.Tid {
+			got = task
+		}
+	}
+	if got.Agent.State != "fail" || got.Agent.Role != "review" {
+		t.Fatalf("agent = %+v, want the reviewer's fail still read as a verdict", got.Agent)
+	}
+
+	// A real fail still refuses completion and leaves the development task open.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err == nil {
+		t.Fatal("completion passed on a failed review")
+	}
+	assertOpen(t, s, dev.Tid)
+	assertOpen(t, s, review.Tid)
 }
 
 // TestDoneRefusesAPartialCheckSet: every declared check is required, not one of

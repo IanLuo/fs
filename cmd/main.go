@@ -67,7 +67,7 @@ var helpBlocks = []struct{ name, block string }{
 
 // usageNotes hold for every verb, so they close the full usage instead of
 // repeating inside each verb's own help.
-const usageNotes = `States: progress, dev-done, pass, fail, blocked.
+const usageNotes = `States: progress, dev-done, pass, fail, blocked, refused.
 The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
 `
 
@@ -221,7 +221,7 @@ func reportCmd(args []string) (any, error) {
 	project := fs.String("project", "", "project scope the task belongs to")
 	session := fs.String("session", "", "this agent session's stable identity")
 	task := fs.String("task", "", "the task this session holds")
-	state := fs.String("state", "", "progress, dev-done, pass, fail or blocked")
+	state := fs.String("state", "", "progress, dev-done, pass, fail, blocked or refused")
 	role := fs.String("role", "dev", "who is reporting: dev, review or runtime")
 	command := fs.String("command", "", "the exact check that was run")
 	digest := fs.String("digest", "", "a short digest of what the check produced")

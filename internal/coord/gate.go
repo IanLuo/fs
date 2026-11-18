@@ -111,9 +111,11 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	if len(missing) > 0 || len(failed) > 0 {
 		reason := refusalReason(missing, failed)
 		// The task stays incomplete and the review records the reason: a refusal
-		// with no trace would make the next reader re-derive it from nothing.
+		// with no trace would make the next reader re-derive it from nothing. It is
+		// recorded as `refused`, not `fail`: the gate declined to close, which is
+		// not a reviewer's verdict that a check failed.
 		extra, err := json.Marshal(eventExtra{
-			State: "fail", Role: "review", Note: clip(reason, maxNote),
+			State: "refused", Role: "review", Note: clip(reason, maxNote),
 		})
 		if err != nil {
 			return DoneResult{}, err

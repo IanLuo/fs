@@ -415,7 +415,9 @@ func Reap(s *memory.Store, in ReapInput, l Launcher) (ReapResult, error) {
 // after a lapse re-claims for the next round with the same session id — its
 // previous `fail` is then history, not a reason to close the pane under it. Only
 // the session's newest word is read: a negative verdict ends the round, a progress
-// report means the agent is working.
+// report means the agent is working. A completion refusal (`refused`) is not a
+// verdict: it says the gate declined to close, not that a check failed, so it
+// never ends the round.
 func roundOver(task Task, ix *memory.Index, sid string, now time.Time) string {
 	if task.done {
 		return "task closed"

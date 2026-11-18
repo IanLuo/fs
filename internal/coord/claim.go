@@ -199,6 +199,7 @@ var (
 		"pass":     true, // a check was run and passed
 		"fail":     true, // a check was run and failed
 		"blocked":  true, // something outside the task stops it
+		"refused":  true, // the completion gate declined to close; not a verdict
 	}
 	roles = map[string]bool{
 		"dev":     true, // the session working the task
@@ -250,7 +251,7 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 		return Evidence{}, err
 	}
 	if !states[in.State] {
-		return Evidence{}, fmt.Errorf("unknown state %q: one of progress, dev-done, pass, fail, blocked", in.State)
+		return Evidence{}, fmt.Errorf("unknown state %q: one of progress, dev-done, pass, fail, blocked, refused", in.State)
 	}
 	if in.Role == "" {
 		in.Role = "dev"

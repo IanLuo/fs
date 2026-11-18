@@ -36,7 +36,8 @@ this order — `--dir`, then the project's newest `fs path` binding, then the ta
 recorded path — and refuses before starting anything when the answer is not an existing
 directory, naming the task and the path.
 
-States: `progress`, `dev-done`, `pass`, `fail`, `blocked`.
+States: `progress`, `dev-done`, `pass`, `fail`, `blocked`, `refused`. `refused` is
+written by `fs done` when the gate declines to close; it is not a reviewer verdict.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
@@ -131,6 +132,7 @@ means the session stopped writing, not that its process ended.
 
 `fs reap` closes an agent fs recorded when its round is over: the task is closed, its
 newest word is a `fail`/`blocked` verdict, or its lease lapsed and it holds nothing. A
+`refused` record is a gate refusal, not a verdict, so it never ends a round. A
 live claim outranks an older verdict — a reviewer that re-claimed for the next round is
 working, not finished. A working agent is never closed, and neither is a pane fs has no
 launch row for: reap closes what fs opened.
@@ -163,13 +165,21 @@ done on a development task                  → refused: a worker cannot complet
 same session as the developer               → refused: a reviewer must be a different session
 the development task was never claimed      → refused: there is no developer to be independent from
 reviewed task already closed                → refused: a completed task is never reopened
-no review-role run of a declared check      → refused, and a fail event records why
+no review-role run of a declared check      → refused, and a `refused` event records why
 newest run of a check exits non-zero        → refused, naming the check and its exit
 all checks pass, run by this reviewer       → closes the review, then the development task
 ```
 
 The gate matches the newest `role=review` event from this session with the exact declared
 command, so a reviewer that fixed and re-ran reports the rerun.
+
+A refusal is recorded as `state: refused`, not `fail`: the gate declined to close, which
+is not a reviewer's verdict that a check failed. The review stays open, reap does not treat
+the refusal as a verdict, and a later passing run plus `fs done` still closes it as pass.
+
+fs has no repair or migration path and does not rewrite shared rows. A `fail` row written
+before the `refused` state existed, whose note begins `completion refused`, keeps that
+shape; read it as a refusal, not a verdict.
 
 ### Liveness
 
