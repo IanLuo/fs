@@ -77,7 +77,7 @@ func TestDispatchFollowsTheNewestBinding(t *testing.T) {
 
 	setPath(t, s, "p", moved)
 	fake := &fakeLauncher{}
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestDispatchFollowsTheNewestBinding(t *testing.T) {
 	newest := t.TempDir()
 	setPath(t, s, "p", newest)
 	again := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, again); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, again); err != nil {
 		t.Fatalf("dispatch after the second move: %v", err)
 	}
 	if again.started[0].Dir != newest {
@@ -133,7 +133,7 @@ func TestDispatchOrderIsFlagThenBindingThenTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: byTask.Tid}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: byTask.Tid}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if fake.started[0].Dir != taskDir {
@@ -143,7 +143,7 @@ func TestDispatchOrderIsFlagThenBindingThenTask(t *testing.T) {
 	setPath(t, s, "p", binding)
 	*now = now.Add(time.Second)
 	overBinding := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: byTask.Tid, Dir: oneOff}, overBinding); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: byTask.Tid, Dir: oneOff}, overBinding); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if overBinding.started[0].Dir != oneOff {
@@ -172,7 +172,7 @@ func TestDispatchRefusesADeadPathBeforeStarting(t *testing.T) {
 	}
 
 	fake := &fakeLauncher{}
-	_, err = coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, fake)
+	_, err = coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, fake)
 	if err == nil {
 		t.Fatal("dispatched into a directory that does not exist")
 	}
@@ -195,7 +195,7 @@ func TestDispatchRefusesADeadPathBeforeStarting(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: file}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: file}, fake); err == nil {
 		t.Error("dispatched into a file")
 	}
 	if len(fake.started) != 0 {
@@ -220,7 +220,7 @@ func TestDispatchDoesNotFallThroughADeadBinding(t *testing.T) {
 	setPath(t, s, "p", dead)
 
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, fake); err == nil {
 		t.Fatal("dispatched past a binding whose directory is gone")
 	} else if !strings.Contains(err.Error(), dead) {
 		t.Errorf("refusal = %v, want the binding's path named", err)

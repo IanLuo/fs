@@ -17,6 +17,7 @@ type fakeLauncher struct {
 	closed   []string
 	startErr error
 	listErr  error
+	onStart  func(coord.LaunchSpec) // what the started agent does, if anything
 }
 
 func (f *fakeLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
@@ -30,6 +31,9 @@ func (f *fakeLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
 	}
 	if _, ok := f.status[pane]; !ok {
 		f.status[pane] = coord.StatusWorking
+	}
+	if f.onStart != nil {
+		f.onStart(spec)
 	}
 	return coord.Handle{Pane: pane, Name: spec.Name, Dir: spec.Dir}, nil
 }
@@ -71,7 +75,7 @@ func TestDispatchStartsOneAgentAndRecordsIt(t *testing.T) {
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
 
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Kind: "pi", Dir: t.TempDir()}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Kind: "pi", Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -103,14 +107,14 @@ func TestDispatchRefusesWhatItMustNotStart(t *testing.T) {
 	task := add(t, s, "p")
 	claim(t, s, "p", "s-1", task.Tid)
 
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, &fakeLauncher{}); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, &fakeLauncher{}); err == nil {
 		t.Error("dispatched a task that is already held")
 	} else if !strings.Contains(err.Error(), "already being worked on") {
 		t.Errorf("refusal = %v, want the holder named", err)
 	}
 
 	other := add(t, s, "p")
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: other.Tid}, &fakeLauncher{}); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: other.Tid}, &fakeLauncher{}); err == nil {
 		t.Error("dispatched a task that records no path")
 	} else if !strings.Contains(err.Error(), "records no path") {
 		t.Errorf("refusal = %v, want the missing path named", err)
@@ -127,7 +131,7 @@ func TestDispatchRefusalLeavesNoRecord(t *testing.T) {
 	}
 	_ = now
 	fake := &fakeLauncher{startErr: errLauncher{}}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, fake); err == nil {
 		t.Fatal("a failing launcher was not reported")
 	}
 	if len(launchRows(t, s, "p")) != 0 {
@@ -149,7 +153,7 @@ func TestDispatchPinsTheStore(t *testing.T) {
 	s, _ := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if !strings.Contains(fake.started[0].Prompt, "export MEMSTORE_DB="+s.Path()) {
@@ -165,23 +169,23 @@ func TestDispatchRefusesASecondLaunch(t *testing.T) {
 	s, now := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
-	first, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake)
+	first, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
 		t.Fatal("dispatched the same task twice while the first agent is running")
 	}
 
 	// Silence is not death: a lapsed lease with a live process still refuses.
 	*now = now.Add(2 * memory.DefaultTTL)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
 		t.Fatal("dispatched over an agent whose lease lapsed but whose process is alive")
 	}
 
 	// A process that is gone frees the task: that is the recovery path.
 	delete(fake.status, first.Pane)
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("re-dispatch after the agent died: %v", err)
 	}
 }
@@ -193,11 +197,11 @@ func TestDispatchRefusesWhenItCannotSee(t *testing.T) {
 	s, _ := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	fake.listErr = errLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err == nil {
 		t.Fatal("dispatched while the launcher was unreadable")
 	}
 	if len(fake.started) != 1 {
@@ -212,7 +216,7 @@ func TestDispatchAsksAReviewerForChecks(t *testing.T) {
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch review: %v", err)
 	}
 	prompt := fake.started[0].Prompt
@@ -234,7 +238,7 @@ func TestReapClosesOnlyFinishedRounds(t *testing.T) {
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
-	started, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	started, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -249,7 +253,7 @@ func TestReapClosesOnlyFinishedRounds(t *testing.T) {
 
 	// A second launch, on a fresh task, whose agent is still working.
 	busy := add(t, s, "p")
-	busyLaunched, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: busy.Tid, Dir: t.TempDir()}, fake)
+	busyLaunched, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: busy.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch busy: %v", err)
 	}
@@ -289,7 +293,7 @@ func TestReapClosesALapsedRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &fakeLauncher{}
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid}, fake)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +344,7 @@ func TestReapClosesAReviewThatEndedInFeedback(t *testing.T) {
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
 	fake := &fakeLauncher{}
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +380,7 @@ func TestStatusTellsSilenceFromDeath(t *testing.T) {
 	fake := &fakeLauncher{}
 
 	launched := add(t, s, "p")
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: launched.Tid, Dir: t.TempDir()}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: launched.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -424,7 +428,7 @@ func TestStatusWithoutALauncherStillAnswers(t *testing.T) {
 	s, _ := open(t)
 	task := add(t, s, "p")
 	fake := &fakeLauncher{}
-	if _, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid, Dir: t.TempDir()}, fake); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 
@@ -458,7 +462,7 @@ func TestReapKeepsAReviewerThatReclaimed(t *testing.T) {
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
 	fake := &fakeLauncher{}
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +503,7 @@ func TestReapDoesNotReadACompletionRefusalAsAVerdict(t *testing.T) {
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
 	fake := &fakeLauncher{}
-	got, err := coord.Dispatch(s, coord.DispatchInput{Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
+	got, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatal(err)
 	}

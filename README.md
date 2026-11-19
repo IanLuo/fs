@@ -22,6 +22,7 @@ fs report --project P --session S --task TID --state S [--role dev|review|runtim
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
 fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+            [--wait-seconds N] [--no-wait]
 fs path   --project P --path DIR
 fs reap   [--project P]
 fs status [--project P] [--session S] [--format json|table]
@@ -92,7 +93,7 @@ What each verb writes:
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; this write is also the keepalive |
 | `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why |
-| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start and a directory that is not there; a launcher failure is a refusal, never a retry |
+| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
 | `status` | nothing | derived from rows on every call |
@@ -100,7 +101,8 @@ What each verb writes:
 ### Dispatch and reap
 
 `fs dispatch` is a convenience, not a scheduler: it starts **one** agent for **one**
-task and returns. There is no retry, no restart-on-crash and no fallback launcher.
+task, waits for that agent to take it, and returns. There is no retry, no
+restart-on-crash and no fallback launcher.
 
 ```text
 read only ──► refuse if: task closed · live holder · its agent still running · no directory
@@ -112,11 +114,19 @@ read only ──► refuse if: task closed · live holder · its agent still run
 start one agent (one launcher call) ──► failure = refusal, nothing else happens
      │
      ▼
-write launch:<tid>:<sid> ──► if this write fails, close the agent again
+wait up to --wait-seconds (60 by default) for that session to claim the task
+     │                                        or write any evidence
+     ├── signal seen ──► write launch:<tid>:<sid> with outcome started ──► ok
      │
-     ▼
-the agent claims itself with the id fs put in its prompt
+     └── no signal ────► write launch:<tid>:<sid> with outcome unconfirmed
+                          ──► exit non-zero, name the pane and the session, leave the pane open
 ```
+
+A pane that exists is not proof the agent read its prompt. So the launch row says
+`unconfirmed` when nothing came back, and a re-dispatch of that task is allowed —
+the no-retry rule is about a broken launcher, not an agent that never woke. Use
+`--no-wait` for the old fire-and-forget behaviour; the output then marks the launch
+`unconfirmed`.
 
 The agent gets a prompt that names the store (`MEMSTORE_DB`), the session id to
 claim as, and every declared check — because a new pane inherits the launcher's

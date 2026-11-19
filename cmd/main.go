@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/coord"
 	"github.com/flagship-dev/flagship/internal/launch"
@@ -44,10 +45,13 @@ var helpBlocks = []struct{ name, block string }{
                                      reviewer ran every declared check and each
                                      one passed.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+              [--wait-seconds N] [--no-wait]
                                      Start one agent for one task. fs chooses the
-                                     session id, records what it started, and the
-                                     agent claims it. No retry: a launcher that
-                                     fails is a refusal.`},
+                                     session id and waits for that session to
+                                     claim the task or report. A launcher that
+                                     fails is a refusal, and so is an agent that
+                                     never takes the prompt. --no-wait returns at
+                                     once and marks the launch unconfirmed.`},
 	{"reap", `  fs reap    [--project P]         Close the agents fs started whose round is
                                      over: task closed, review verdict recorded,
                                      or lease lapsed. Working agents are left
@@ -278,11 +282,17 @@ func dispatchCmd(args []string) (any, error) {
 	task := fs.String("task", "", "the task to start an agent for")
 	kind := fs.String("kind", "pi", "agent kind: pi, claude or codex")
 	dir := fs.String("dir", "", "where the agent works; defaults to the task's recorded path")
+	waitSeconds := fs.Int("wait-seconds", int(coord.DefaultDispatchWait/time.Second),
+		"how long to wait for the agent to claim the task or report")
+	noWait := fs.Bool("no-wait", false, "return at once and mark the launch unconfirmed")
 	if err := parse(fs, args); err != nil {
 		return nil, err
 	}
 	if *project == "" || *task == "" {
 		return nil, usageErr{"dispatch: --project and --task are required"}
+	}
+	if *waitSeconds <= 0 {
+		return nil, usageErr{"dispatch: --wait-seconds must be a positive number of seconds"}
 	}
 
 	s, err := openStore()
@@ -293,6 +303,7 @@ func dispatchCmd(args []string) (any, error) {
 
 	return coord.Dispatch(s, coord.DispatchInput{
 		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
+		Wait: time.Duration(*waitSeconds) * time.Second, NoWait: *noWait,
 	}, launcher)
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/flagship-dev/flagship/internal/coord"
+	"github.com/flagship-dev/flagship/internal/memory"
 )
 
 // invoke runs one command line against a scratch memstore and returns its exit
@@ -42,15 +43,19 @@ func scratch(t *testing.T) {
 
 // stubLauncher answers as herdr would, with no process and no PATH lookup.
 type stubLauncher struct {
-	live   map[string]string // pane -> working|idle
-	panes  map[string]string // name -> pane, for the handles it issued
-	closed []string
+	live    map[string]string // pane -> working|idle
+	panes   map[string]string // name -> pane, for the handles it issued
+	closed  []string
+	onStart func(coord.LaunchSpec) // what the started agent does, if anything
 }
 
 func (l *stubLauncher) Start(spec coord.LaunchSpec) (coord.Handle, error) {
 	pane := "w1:" + spec.Name
 	l.panes[spec.Name] = pane
 	l.live[pane] = coord.StatusWorking
+	if l.onStart != nil {
+		l.onStart(spec)
+	}
 	return coord.Handle{Pane: pane, Name: spec.Name, Dir: spec.Dir}, nil
 }
 
@@ -499,7 +504,7 @@ func TestStatusShowsTheProcessViewFromTheLauncher(t *testing.T) {
 	stub := launcher.(*stubLauncher)
 
 	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
-	mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir())
+	mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--no-wait")
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"status", "--project", "p", "--format", "table"}, &stdout, &stderr); code != 0 {
@@ -547,7 +552,7 @@ func TestPathMovesTheProjectWithoutTouchingATask(t *testing.T) {
 		t.Fatalf("path = %v, want p in %s", bound, moved)
 	}
 
-	started := mustOK(t, "dispatch", "--project", "p", "--task", tid)
+	started := mustOK(t, "dispatch", "--project", "p", "--task", tid, "--no-wait")
 	if started["dir"] != moved {
 		t.Errorf("dispatched into %v, want the project binding %s", started["dir"], moved)
 	}
@@ -605,5 +610,120 @@ func TestPathRefusalsExitOne(t *testing.T) {
 	}
 	if projects := mustOK(t, "status")["projects"].([]any); len(projects) != 0 {
 		t.Fatalf("%d projects exist after every path was refused: %v", len(projects), projects)
+	}
+}
+
+// promptSession reads the identity fs minted for the agent out of the prompt.
+func promptSession(t *testing.T, prompt string) string {
+	t.Helper()
+	fields := strings.Fields(prompt)
+	for i, f := range fields {
+		if f == "session" && i+1 < len(fields) {
+			return strings.TrimSuffix(fields[i+1], ".")
+		}
+	}
+	t.Fatalf("prompt names no session:\n%s", prompt)
+	return ""
+}
+
+// latestLaunchOutcome reads the outcome on the newest launch row for a task.
+func latestLaunchOutcome(t *testing.T, tid string) string {
+	t.Helper()
+	s, err := memory.Open(os.Getenv("MEMSTORE_DB"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	rows, err := s.Rows(memory.Scope("p"))
+	if err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	outcome := ""
+	for _, r := range rows {
+		if r.Kind != memory.KindLaunch || r.Task() != tid {
+			continue
+		}
+		var ex struct {
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil {
+			t.Fatalf("launch extra: %v", err)
+		}
+		outcome = ex.Outcome // newest first
+		break
+	}
+	return outcome
+}
+
+// TestDispatchRefusesAnAgentThatNeverTakesThePrompt: a pane and a printed ok is
+// not evidence the agent woke. The refusal exits non-zero, names the pane and the
+// session, records an unconfirmed launch, and leaves the pane open.
+func TestDispatchRefusesAnAgentThatNeverTakesThePrompt(t *testing.T) {
+	scratch(t)
+	stub := launcher.(*stubLauncher)
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+
+	code, env := invoke(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--wait-seconds", "1")
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: %v", code, env)
+	}
+	msg, _ := env["error"].(string)
+	if strings.Contains(msg, "\n") {
+		t.Errorf("refusal is more than one line: %q", msg)
+	}
+	if len(stub.panes) != 1 {
+		t.Fatalf("started %d panes, want 1", len(stub.panes))
+	}
+	var pane string
+	for _, p := range stub.panes {
+		pane = p
+	}
+	if !strings.Contains(msg, pane) || !strings.Contains(msg, "session d-") {
+		t.Errorf("refusal = %q, want the pane %q and the session named", msg, pane)
+	}
+	if len(stub.closed) != 0 || len(stub.live) != 1 {
+		t.Errorf("the slow pane was closed: closed %v, live %v", stub.closed, stub.live)
+	}
+	if got := latestLaunchOutcome(t, tid); got != coord.OutcomeUnconfirmed {
+		t.Errorf("launch outcome = %q, want %q", got, coord.OutcomeUnconfirmed)
+	}
+}
+
+// TestDispatchWaitsForTheClaimingAgent: dispatch returns ok only after the
+// dispatched session has taken the task.
+func TestDispatchWaitsForTheClaimingAgent(t *testing.T) {
+	scratch(t)
+	stub := launcher.(*stubLauncher)
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+
+	stub.onStart = func(spec coord.LaunchSpec) {
+		sid := promptSession(t, spec.Prompt)
+		mustOK(t, "claim", "--project", "p", "--session", sid, "--task", tid)
+	}
+	started := mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--wait-seconds", "2")
+	if started["unconfirmed"] != false {
+		t.Errorf("a claimed task reads unconfirmed: %v", started)
+	}
+	if got := latestLaunchOutcome(t, tid); got != coord.OutcomeStarted {
+		t.Errorf("launch outcome = %q, want %q", got, coord.OutcomeStarted)
+	}
+}
+
+// TestDispatchNoWaitReturnsUnconfirmed: fire-and-forget returns at once, and the
+// output says the launch was not confirmed.
+func TestDispatchNoWaitReturnsUnconfirmed(t *testing.T) {
+	scratch(t)
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+
+	begin := time.Now()
+	data := mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--no-wait")
+	if elapsed := time.Since(begin); elapsed > 2*time.Second {
+		t.Errorf("--no-wait took %s", elapsed)
+	}
+	if data["unconfirmed"] != true {
+		t.Errorf("--no-wait output does not mark the launch unconfirmed: %v", data)
+	}
+	if got := latestLaunchOutcome(t, tid); got != coord.OutcomeStarted {
+		t.Errorf("launch outcome = %q, want %q", got, coord.OutcomeStarted)
 	}
 }
