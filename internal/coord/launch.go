@@ -79,6 +79,11 @@ type DispatchInput struct {
 	// NoWait is fire-and-forget: start, record, return, and mark the result
 	// unconfirmed because nothing was seen.
 	NoWait bool
+
+	// Caller is the pane that asked for the work, when one was named. It is
+	// carried, never guessed: empty means the caller is unknown, not that the
+	// dispatcher is the caller. cap addresses the round's end to this pane.
+	Caller string
 }
 
 // PriorLaunch names an earlier launch of the same task. It is set when a
@@ -98,6 +103,9 @@ type DispatchResult struct {
 	Name    string `json:"name,omitempty"`
 	Dir     string `json:"dir"`
 	Prompt  string `json:"prompt"`
+	// CallerPane is who asked for this launch, when it was known. A finished
+	// round can then be addressed to the pane that is waiting for it.
+	CallerPane string `json:"caller_pane,omitempty"`
 	// Unconfirmed is true when fs did not see the agent take the task: a
 	// --no-wait launch, which returns without looking.
 	Unconfirmed bool         `json:"unconfirmed"`
@@ -217,6 +225,7 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	extra, err := json.Marshal(launchExtra{
 		Task: task.Tid, Session: sid, Kind: in.Kind, Role: task.Kind,
 		Pane: handle.Pane, Name: handle.Name, Dir: dir, At: now.UTC(), Outcome: outcome,
+		CallerPane: in.Caller,
 	})
 	if err != nil {
 		return DispatchResult{}, err
@@ -233,7 +242,7 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	return DispatchResult{
 		Task: task.Tid, Kind: in.Kind, Session: sid,
 		Pane: handle.Pane, Name: handle.Name, Dir: dir, Prompt: prompt,
-		Unconfirmed: unconfirmed, Previous: previous,
+		CallerPane: in.Caller, Unconfirmed: unconfirmed, Previous: previous,
 	}, nil
 }
 
@@ -383,6 +392,9 @@ type launchExtra struct {
 	Dir     string    `json:"dir"`
 	At      time.Time `json:"at"`
 	Outcome string    `json:"outcome,omitempty"`
+	// CallerPane is the pane that asked for the launch. Empty when no caller was
+	// named: fs never invents one.
+	CallerPane string `json:"caller_pane,omitempty"`
 }
 
 // LaunchRecord is one agent fs started.

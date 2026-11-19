@@ -655,6 +655,124 @@ func latestLaunchOutcome(t *testing.T, tid string) string {
 	return outcome
 }
 
+// latestLaunchCaller reads caller_pane from the newest launch row for a task. The
+// second result says whether the field was there at all, so a test can tell an
+// empty caller from a missing one.
+func latestLaunchCaller(t *testing.T, tid string) (string, bool) {
+	t.Helper()
+	s, err := memory.Open(os.Getenv("MEMSTORE_DB"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	rows, err := s.Rows(memory.Scope("p"))
+	if err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	for _, r := range rows {
+		if r.Kind != memory.KindLaunch || r.Task() != tid {
+			continue
+		}
+		var ex struct {
+			CallerPane *string `json:"caller_pane"`
+		}
+		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil {
+			t.Fatalf("launch extra: %v", err)
+		}
+		if ex.CallerPane == nil {
+			return "", false
+		}
+		return *ex.CallerPane, true
+	}
+	return "", false
+}
+
+// TestDispatchRecordsTheCallerPane: the caller is the pane that asked for the
+// work. fs records it on the launch row and reports it in the result, so the
+// finished round can be addressed instead of broadcast.
+func TestDispatchRecordsTheCallerPane(t *testing.T) {
+	scratch(t)
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+
+	data := mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(),
+		"--no-wait", "--caller-pane", "w1:caller")
+	if got := data["caller_pane"]; got != "w1:caller" {
+		t.Errorf("dispatch result caller_pane = %v, want w1:caller", got)
+	}
+	if got, ok := latestLaunchCaller(t, tid); !ok || got != "w1:caller" {
+		t.Errorf("launch row caller_pane = %q (present %v), want w1:caller", got, ok)
+	}
+}
+
+// TestDispatchCallerPaneComesFromTheFlagOrTheHarness: --caller-pane wins when it
+// is given; otherwise the harness's own pane id is the caller. The flag is what
+// lets a caller say who it is when the harness exports nothing.
+func TestDispatchCallerPaneComesFromTheFlagOrTheHarness(t *testing.T) {
+	scratch(t)
+	t.Setenv("HERDR_PANE_ID", "w9:harness")
+
+	flagTid := mustOK(t, "add", "--project", "p", "--goal", "flag wins", "--check", "true")["task"].(string)
+	data := mustOK(t, "dispatch", "--project", "p", "--task", flagTid, "--dir", t.TempDir(),
+		"--no-wait", "--caller-pane", "w1:typed")
+	if got := data["caller_pane"]; got != "w1:typed" {
+		t.Errorf("with both, caller_pane = %v, want the flag w1:typed", got)
+	}
+
+	envTid := mustOK(t, "add", "--project", "p", "--goal", "env wins", "--check", "true")["task"].(string)
+	data = mustOK(t, "dispatch", "--project", "p", "--task", envTid, "--dir", t.TempDir(), "--no-wait")
+	if got := data["caller_pane"]; got != "w9:harness" {
+		t.Errorf("without the flag, caller_pane = %v, want $HERDR_PANE_ID w9:harness", got)
+	}
+	if got, ok := latestLaunchCaller(t, envTid); !ok || got != "w9:harness" {
+		t.Errorf("launch row caller_pane = %q (present %v), want w9:harness", got, ok)
+	}
+}
+
+// TestDispatchWithoutACallerInventsNone: fs never guesses a pane. With no flag and
+// no harness variable the caller is simply unknown, and the field is absent.
+func TestDispatchWithoutACallerInventsNone(t *testing.T) {
+	scratch(t)
+	t.Setenv("HERDR_PANE_ID", "")
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+
+	data := mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--no-wait")
+	if got, ok := data["caller_pane"]; ok {
+		t.Errorf("dispatch invented a caller: %v", got)
+	}
+	if got, ok := latestLaunchCaller(t, tid); ok {
+		t.Errorf("launch row invented a caller: %q", got)
+	}
+}
+
+// TestStatusCarriesTheCallerPane: status answers who is waiting without a second
+// query, and says nothing about a task fs never launched, rather than inventing a
+// pane.
+func TestStatusCarriesTheCallerPane(t *testing.T) {
+	scratch(t)
+	t.Setenv("HERDR_PANE_ID", "")
+
+	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
+	mustOK(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--no-wait", "--caller-pane", "w1:caller")
+	hand := mustOK(t, "add", "--project", "p", "--goal", "never launched", "--check", "true")["task"].(string)
+
+	data := mustOK(t, "status", "--project", "p")
+	projects := data["projects"].([]any)
+	tasks := projects[0].(map[string]any)["tasks"].([]any)
+	byTask := map[string]map[string]any{}
+	for _, raw := range tasks {
+		task := raw.(map[string]any)
+		byTask[task["task"].(string)] = task
+	}
+	process, _ := byTask[tid]["process"].(map[string]any)
+	if got := process["caller_pane"]; got != "w1:caller" {
+		t.Errorf("status caller_pane = %v, want w1:caller", got)
+	}
+	process, _ = byTask[hand]["process"].(map[string]any)
+	if got, ok := process["caller_pane"]; ok {
+		t.Errorf("status invented a caller for an unlaunched task: %v", got)
+	}
+}
+
 // TestDispatchRefusesAnAgentThatNeverTakesThePrompt: a pane and a printed ok is
 // not evidence the agent woke. The refusal exits non-zero, names the pane and the
 // session, records an unconfirmed launch, and leaves the pane open.
@@ -663,9 +781,14 @@ func TestDispatchRefusesAnAgentThatNeverTakesThePrompt(t *testing.T) {
 	stub := launcher.(*stubLauncher)
 	tid := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")["task"].(string)
 
-	code, env := invoke(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(), "--wait-seconds", "1")
+	code, env := invoke(t, "dispatch", "--project", "p", "--task", tid, "--dir", t.TempDir(),
+		"--wait-seconds", "1", "--caller-pane", "w1:waiting")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1: %v", code, env)
+	}
+	// A launch nobody saw start still has a caller waiting, so it is recorded.
+	if got, ok := latestLaunchCaller(t, tid); !ok || got != "w1:waiting" {
+		t.Errorf("unconfirmed launch caller_pane = %q (present %v), want w1:waiting", got, ok)
 	}
 	msg, _ := env["error"].(string)
 	if strings.Contains(msg, "\n") {

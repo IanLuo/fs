@@ -421,6 +421,53 @@ func TestStatusTellsSilenceFromDeath(t *testing.T) {
 	}
 }
 
+// TestStatusKeepsTheNewestCaller: a re-dispatch is a new launch, so status names
+// the caller waiting for the round that is running now, not the one that asked
+// first. A pane fs never opened has no caller at all.
+func TestStatusKeepsTheNewestCaller(t *testing.T) {
+	s, now := open(t)
+	fake := &fakeLauncher{}
+	task := add(t, s, "p")
+
+	first, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid,
+		Dir: t.TempDir(), Caller: "w1:first"}, fake)
+	if err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	if first.CallerPane != "w1:first" {
+		t.Errorf("first result caller = %q, want w1:first", first.CallerPane)
+	}
+	delete(fake.status, first.Pane) // the agent died: a re-dispatch is allowed
+	*now = now.Add(time.Second)     // a new launch, not an overwrite of the same key
+
+	second, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: task.Tid,
+		Dir: t.TempDir(), Caller: "w1:second"}, fake)
+	if err != nil {
+		t.Fatalf("re-dispatch: %v", err)
+	}
+	rep, err := coord.Status(s, coord.StatusInput{Project: "p", Launcher: fake})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	byTask := map[string]coord.TaskStatus{}
+	for _, ts := range rep.Projects[0].Tasks {
+		byTask[ts.Task] = ts
+	}
+	if got := byTask[task.Tid].Process.CallerPane; got != "w1:second" {
+		t.Errorf("caller_pane = %q, want the newest caller %q", got, second.CallerPane)
+	}
+	hand := add(t, s, "p")
+	rep, err = coord.Status(s, coord.StatusInput{Project: "p", Launcher: fake})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, ts := range rep.Projects[0].Tasks {
+		if ts.Task == hand.Tid && ts.Process.CallerPane != "" {
+			t.Errorf("unlaunched task caller_pane = %q, want none", ts.Process.CallerPane)
+		}
+	}
+}
+
 // TestStatusWithoutALauncherStillAnswers: a read never fails closed. Without a
 // launcher, or with one that errors, the process reads unknown and the rows still
 // answer.

@@ -45,13 +45,17 @@ var helpBlocks = []struct{ name, block string }{
                                      reviewer ran every declared check and each
                                      one passed.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
-              [--wait-seconds N] [--no-wait]
+              [--wait-seconds N] [--no-wait] [--caller-pane PANE]
                                      Start one agent for one task. fs chooses the
                                      session id and waits for that session to
                                      claim the task or report. A launcher that
                                      fails is a refusal, and so is an agent that
                                      never takes the prompt. --no-wait returns at
-                                     once and marks the launch unconfirmed.`},
+                                     once and marks the launch unconfirmed.
+                                     --caller-pane names the pane that asked, so
+                                     the finished round can be addressed to it;
+                                     it defaults to $HERDR_PANE_ID and is empty
+                                     when neither is given.`},
 	{"reap", `  fs reap    [--project P]         Close the agents fs started whose round is
                                      over: task closed, review verdict recorded,
                                      or lease lapsed. Working agents are left
@@ -285,11 +289,20 @@ func dispatchCmd(args []string) (any, error) {
 	waitSeconds := fs.Int("wait-seconds", int(coord.DefaultDispatchWait/time.Second),
 		"how long to wait for the agent to claim the task or report")
 	noWait := fs.Bool("no-wait", false, "return at once and mark the launch unconfirmed")
+	callerFlag := fs.String("caller-pane", "", "the pane that asked for this launch; defaults to $HERDR_PANE_ID")
 	if err := parse(fs, args); err != nil {
 		return nil, err
 	}
 	if *project == "" || *task == "" {
 		return nil, usageErr{"dispatch: --project and --task are required"}
+	}
+	caller := *callerFlag
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "caller-pane" })
+	if !given {
+		// The harness exports its own pane id; a launcher may not, and fs never
+		// invents one.
+		caller = os.Getenv("HERDR_PANE_ID")
 	}
 	if *waitSeconds <= 0 {
 		return nil, usageErr{"dispatch: --wait-seconds must be a positive number of seconds"}
@@ -304,6 +317,7 @@ func dispatchCmd(args []string) (any, error) {
 	return coord.Dispatch(s, coord.DispatchInput{
 		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
 		Wait: time.Duration(*waitSeconds) * time.Second, NoWait: *noWait,
+		Caller: caller,
 	}, launcher)
 }
 

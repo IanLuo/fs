@@ -35,6 +35,10 @@ type Process struct {
 	Pane   string     `json:"pane,omitempty"`
 	Name   string     `json:"name,omitempty"`
 	At     *time.Time `json:"launched,omitempty"`
+	// CallerPane is the pane that asked for this launch, when fs recorded one.
+	// It is read from the newest launch row, so a re-dispatch reports the newest
+	// caller; a task with no launch record carries no caller.
+	CallerPane string `json:"caller_pane,omitempty"`
 }
 
 // Process statuses, plus the one fs reports when it cannot answer.
@@ -227,7 +231,7 @@ func processOf(task string, launches map[string]launchExtra, live map[string]str
 		return Process{Status: ProcessUnknown}
 	}
 	at := ex.At.UTC()
-	p := Process{Pane: ex.Pane, Name: ex.Name, At: &at, Status: ProcessUnknown}
+	p := Process{Pane: ex.Pane, Name: ex.Name, At: &at, CallerPane: ex.CallerPane, Status: ProcessUnknown}
 	if !canSee {
 		return p
 	}
