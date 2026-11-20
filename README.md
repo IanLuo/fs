@@ -20,6 +20,7 @@ fs add    --project P --goal G --check C [--check C]... [--path DIR] [--review-o
 fs claim  --project P --session S [--task TID]
 fs report --project P --session S --task TID --state S [--role dev|review|runtime]
           [--command C --exit N] [--digest D] [--note TEXT]
+          [--slot spec|tests|regression] [--none '<why>']
 fs done   --project P --session S --task TID [--note TEXT]
 fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
             [--worktree] [--wait-seconds N] [--no-wait]
@@ -40,6 +41,7 @@ directory, naming the task and the path.
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`, `refused`. `refused` is
 written by `fs done` when the gate declines to close; it is not a reviewer verdict.
 `closed` is written by `fs done` on success and is never a state `fs report` accepts.
+`none` is written by `--slot spec --none '<why>'` and is never a state you name yourself.
 
 `--role` is omitted by most callers, and the task supplies it: a report on a review task
 records `review`, and one on development work records `dev`. The role follows the work
@@ -48,7 +50,7 @@ before, that report was stored as `dev`, which `fs done` ignores, and completion
 refused for a missing run rather than a wrong role. A role you name is kept as given,
 so a harness observation stays `runtime`.
 
-A round has two gated handovers below `claim`. `dev-done` is refused until the review
+A round has three gated handovers below `claim`. `dev-done` is refused until the review
 task exists and carries the tree the developer finished (`--digest <commit>`);
 `fs add --review-of` is refused while one open review of that task has no verdict yet.
 `fs done` then compares the developer's digest with the one the reviewer's passing run
@@ -57,6 +59,22 @@ with the development task's recorded path, and closes nothing when they are one 
 the reviewer signs from its own tree, and the close records the directory it was signed
 from. That close is one `fs.event` per closed task, written when the round ends, so the
 records can answer how long a round took and how long the review took.
+
+A review answers three questions, and `fs done` refuses until each has a passing answer
+at the developer's tree — one `--slot` per answer:
+
+| slot | the question | what the reviewer runs |
+|---|---|---|
+| `spec` | are the specs honoured? | the project's own spec check — `observe`, a test named for an acceptance criterion, or a demo script. A change no spec governs is recorded as `--slot spec --none '<why>'`, so the gap is visible instead of invisible |
+| `tests` | are the code and tests good? | the declared checks, plus `scripts/changed-needs-test.sh <parent>`: it exits non-zero when the change touches a non-test `.go` file and no test file, and prints one line to paste into the note |
+| `regression` | did this change break anything? | `go test -race ./...` or the project's end-to-end suite, or the change's own test at the parent commit (it must fail there) and at the reviewed commit (it must pass) |
+
+A question may be recorded as a `fail` as well as a `pass`, so a failing question is named
+instead of left looking unanswered. The answers are rows like any other report, so a reader
+answers all three from `fs status` alone. The rule is by task creation: a review task
+created before 2026-11-20T08:40Z closes on its declared checks and digest — the rule it was
+opened under — so a review already working is not made unclosable by a question it was
+never asked.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
@@ -74,6 +92,7 @@ fs add  ──► t-dev
                           report dev-done --digest <commit> ──► (not complete)
                                                                 claim s-rev
                                                                 runs each declared check
+                                                                answers spec/tests/regression
                                                                 report pass+exit+--digest ──► fs done
                                                                                               │
                                                                 t-rev closed, then t-dev ─────┘
@@ -110,8 +129,8 @@ What each verb writes:
 |---|---|---|
 | `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write; a review is refused while one open review of the same task has no verdict |
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
-| `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
-| `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout; removes a review checkout `fs` made, only while it is clean, and names one it kept |
+| `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; a `--slot` needs a `--digest` and a `pass`, a `fail` or (for `spec` only) `--none '<why>'`; this write is also the keepalive |
+| `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout; refuses unless the three review questions are answered at the developer's digest, naming each unanswered one and the verb that answers it; removes a review checkout `fs` made, only while it is clean, and names one it kept |
 | `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there, a review started in the developer's checkout, `--worktree` on a task that is not a review of a named tree, and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |

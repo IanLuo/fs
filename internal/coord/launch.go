@@ -388,13 +388,22 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 			" --role review --state pass --command '<the exact command>' --exit <exit code> --digest '<the commit under review>'\n")
 		b.WriteString("   Use --state fail when the exit was non-zero. Never report a check you did not run.\n")
 		b.WriteString("   --digest is what the gate compares with the developer's dev-done: name the commit you reviewed, and a verdict for a different tree is refused.\n\n")
-		b.WriteString("4. While you still have reading to do, keep the lease alive: " +
+		// The three questions, one line each, matched to the three slots: the close
+		// refuses until each has a passing answer at the reviewed commit, and the
+		// reviewer chooses the command that answers it.
+		b.WriteString("4. Answer the three questions the close asks, one --slot each, at the same digest. No answer, no close:\n")
+		b.WriteString("   spec        are the specs honoured? run the project's own spec check (observe, a test named for an acceptance criterion, or a demo script); when no spec governs this change, record the gap: --slot spec --none '<why>'\n")
+		b.WriteString("   tests       are the code and tests good? the declared checks above, plus scripts/changed-needs-test.sh <parent commit>: it exits non-zero when the change touches a non-test .go file and no test file, and prints one line to paste into --note\n")
+		b.WriteString("   regression  did this change break anything? go test -race ./... or the project's end-to-end suite, or the change's own test at the parent commit (it must fail there) and at this one (it must pass)\n")
+		b.WriteString("   fs report --project " + project + " --session " + sid + " --task " + task.Tid +
+			" --slot spec|tests|regression --state pass --command '<what answered it>' --exit 0 --digest '<the commit under review>' --note '<one line>'\n\n")
+		b.WriteString("5. While you still have reading to do, keep the lease alive: " +
 			"fs report --project " + project + " --session " + sid + " --task " + task.Tid +
 			" --role review --state progress --note reviewing, at least every 90 s.\n")
 		b.WriteString("   If a write is refused because the lease expired, re-run the claim with this same session id: it takes the next round and you can continue.\n\n")
-		b.WriteString("5. If every check passed: fs done --project " + project + " --session " + sid + " --task " + task.Tid + ", then stop.\n")
+		b.WriteString("6. If every check passed and every question is answered: fs done --project " + project + " --session " + sid + " --task " + task.Tid + ", then stop.\n")
 		b.WriteString("   Run it from the directory you reviewed in, not the developer's checkout: the gate refuses a signature made in the directory the developer recorded.\n")
-		b.WriteString("   If a check failed or could not be run: report --state fail with a --note saying what is wrong, then stop. Do not fix the code and do not run done: a fresh reviewer gets the next round.\n")
+		b.WriteString("   If a check or a question failed: report --state fail with the --slot it answers and a --note saying what is wrong, then stop. Do not fix the code and do not run done: a fresh reviewer gets the next round.\n")
 		return b.String()
 	}
 	b.WriteString("2. Do the work.\n\n")

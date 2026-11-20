@@ -294,10 +294,11 @@ func hasReviewTask(rows []memory.Row, devTid string) bool {
 // hasVerdict reports whether a review task carries a reviewer's verdict: a pass,
 // fail or blocked report from the review role. A review with no verdict is the
 // one ready signal a round has, and a second one would be a second review of the
-// same round.
+// same round. An answer to one of the three review questions is not a verdict on
+// the round: the declared checks decide that, so a slot answer is skipped here.
 func hasVerdict(ix *memory.Index, tid string, now time.Time) bool {
 	for _, ev := range eventsFor(ix, tid, now) {
-		if ev.Role != "review" {
+		if ev.Role != "review" || ev.Slot != "" {
 			continue
 		}
 		if ev.State == "pass" || ev.State == "fail" || ev.State == "blocked" {

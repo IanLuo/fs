@@ -177,6 +177,7 @@ func TestDoneComparesTheReviewersTree(t *testing.T) {
 		Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
 		State: "pass", Command: dev.Checks[0], Exit: exit(0), Digest: fixtureDigest,
 	})
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
 		t.Fatalf("equal digests did not close the round: %v", err)
 	}
@@ -251,6 +252,7 @@ func TestDoneRefusesTheDevelopersCheckout(t *testing.T) {
 
 	// A signature from the reviewer's own tree closes the round, and the record says
 	// where it was made; `fs status` reads it off the closed round.
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: reviewTree}); err != nil {
 		t.Fatalf("a signature from the review worktree did not close the round: %v", err)
 	}
@@ -274,6 +276,7 @@ func TestDoneRefusesTheDevelopersCheckout(t *testing.T) {
 	devDone(t, s, "p", "s-dev2", old.Tid)
 	claim(t, s, "p", "s-rev2", oldReview.Tid)
 	runCheck(t, s, "p", "s-rev2", oldReview.Tid, old.Checks[0], 0)
+	slotPass(t, s, "p", "s-rev2", oldReview.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev2", Task: oldReview.Tid, Dir: reviewTree}); err != nil {
 		t.Fatalf("a round with no recorded developer path refused a signature: %v", err)
 	}
@@ -306,6 +309,7 @@ func TestCloseIsRecordedForEveryClosedTask(t *testing.T) {
 	*now = now.Add(60 * time.Second)
 	signedAt := *now
 	signedFrom := t.TempDir()
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: signedFrom}); err != nil {
 		t.Fatalf("done: %v", err)
 	}
@@ -499,6 +503,7 @@ func TestCompletionRefusalIsNotAVerdict(t *testing.T) {
 
 	// The same reviewer runs the check and completes: the round closes as pass.
 	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	result, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid})
 	if err != nil {
 		t.Fatalf("a recorded run did not let completion through: %v", err)
@@ -598,6 +603,7 @@ func TestDoneRequiresADifferentSession(t *testing.T) {
 func TestDonePassesOnAPassingIndependentCheckSet(t *testing.T) {
 	s, dev, review := reviewFixture(t)
 	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 
 	result, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid})
 	if err != nil {
@@ -639,6 +645,7 @@ func TestDoneRerunsTheNewestResult(t *testing.T) {
 	claim(t, s, "p", "s-rev2", review2.Tid)
 	runCheck(t, s, "p", "s-rev2", review2.Tid, dev.Checks[0], 1)
 	runCheck(t, s, "p", "s-rev2", review2.Tid, dev.Checks[0], 0)
+	slotPass(t, s, "p", "s-rev2", review2.Tid, fixtureDigest)
 
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev2", Task: review2.Tid}); err != nil {
 		t.Fatalf("the newest run was not the one the gate read: %v", err)

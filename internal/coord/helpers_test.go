@@ -10,7 +10,10 @@ import (
 )
 
 // open returns a store on a scratch memstore file with a controllable clock. A
-// test that needs to watch a lease lapse moves the clock rather than waiting.
+// test that needs to watch a lease lapse moves the clock rather than waiting. The
+// date is after the three-slot rule's cutoff, so a review a test opens is judged by
+// the rule a review is opened under today; beforeSlots moves it back for the rounds
+// that were opened earlier.
 func open(t *testing.T) (*memory.Store, *time.Time) {
 	t.Helper()
 	s, err := memory.Open(filepath.Join(t.TempDir(), "memory.db"))
@@ -18,10 +21,15 @@ func open(t *testing.T) (*memory.Store, *time.Time) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	s.Clock = func() time.Time { return now }
 	return s, &now
 }
+
+// beforeSlots moves the fixture clock to a day before the three review questions
+// became the close rule, so a review opened from here on closes under the older
+// rule: its declared checks and the digest, and nothing about slots.
+func beforeSlots(now *time.Time) { *now = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC) }
 
 // add records a development task with one declared check.
 func add(t *testing.T, s *memory.Store, project string) coord.Task {
@@ -117,6 +125,18 @@ func devDone(t *testing.T, s *memory.Store, project, session, task string) {
 		Project: project, Session: session, Task: task, State: "dev-done",
 		Digest: fixtureDigest, Note: "ready for review",
 	})
+}
+
+// slotPass records the three review questions as passed at a tree: the answers a
+// close under the current rule needs, from the reviewer that ran them.
+func slotPass(t *testing.T, s *memory.Store, project, session, task, digest string) {
+	t.Helper()
+	for _, slot := range []string{"spec", "tests", "regression"} {
+		report(t, s, coord.ReportInput{
+			Project: project, Session: session, Task: task, Role: "review",
+			State: "pass", Slot: slot, Command: "check " + slot, Exit: exit(0), Digest: digest,
+		})
+	}
 }
 
 // fixtureDigest is the tree the test rounds develop and review. One value, so a

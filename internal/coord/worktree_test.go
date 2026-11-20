@@ -124,6 +124,7 @@ func (r reviewWorktreeRound) sign(t *testing.T) (coord.DoneResult, error) {
 		Project: "p", Session: r.revSid, Task: r.review.Tid, Role: "review",
 		State: "pass", Command: r.dev.Checks[0], Exit: exit(0), Digest: r.head,
 	})
+	slotPass(t, r.s, "p", r.revSid, r.review.Tid, r.head)
 	return coord.Done(r.s, coord.DoneInput{Project: "p", Session: r.revSid, Task: r.review.Tid, Dir: r.dir})
 }
 
@@ -314,6 +315,7 @@ func TestDoneNeverRemovesADirectoryFsDidNotMake(t *testing.T) {
 		Project: "p", Session: started.Session, Task: review.Tid, Role: "review",
 		State: "pass", Command: dev.Checks[0], Exit: exit(0), Digest: head,
 	})
+	slotPass(t, s, "p", started.Session, review.Tid, head)
 	if _, err := coord.Done(s, coord.DoneInput{
 		Project: "p", Session: started.Session, Task: review.Tid, Dir: t.TempDir(),
 	}); err != nil {

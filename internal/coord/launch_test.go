@@ -236,6 +236,18 @@ func TestDispatchAsksAReviewerForChecks(t *testing.T) {
 			t.Errorf("reviewer prompt is missing %q:\n%s", want, prompt)
 		}
 	}
+	// The three questions the close asks are in the prompt, one line each, matched
+	// to the three slots: a reviewer that has to discover them from a refusal has
+	// already wasted the round.
+	for _, want := range []string{
+		"spec        are the specs honoured?", "--slot spec --none",
+		"tests       are the code and tests good?", "scripts/changed-needs-test.sh",
+		"regression  did this change break anything?", "go test -race",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("reviewer prompt does not carry the slot protocol line %q:\n%s", want, prompt)
+		}
+	}
 }
 
 // TestDispatchRefusesAReviewInTheDeveloperCheckout: the separate checkout is a fact
@@ -321,6 +333,7 @@ func TestReapClosesOnlyFinishedRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	runCheck(t, s, "p", started.Session, review.Tid, dev.Checks[0], 0)
+	slotPass(t, s, "p", started.Session, review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: started.Session, Task: review.Tid}); err != nil {
 		t.Fatal(err)
 	}

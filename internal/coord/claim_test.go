@@ -398,6 +398,7 @@ func TestReportRoleFollowsTheTask(t *testing.T) {
 	}
 	// The gate reads the pass the task supplied the role for: the round closes
 	// without a second report.
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
 		t.Fatalf("the gate did not read the derived role: %v", err)
 	}

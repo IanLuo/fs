@@ -466,10 +466,11 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	if code, env := invoke(t, "done", "--project", "p", "--session", "s-rev", "--task", rev); code != 1 {
 		t.Fatalf("completion passed on a failing run: %d %v", code, env)
 	}
-	// The passing run: completion.
+	// The passing run, and an answer to each review question: completion.
 	mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
 		"--state", "pass", "--role", "review", "--command", "go test ./...", "--exit", "0",
 		"--digest", "abc123")
+	slotPass(t, "p", "s-rev", rev, "abc123")
 	done := mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
 	if done["dev"] != dev || done["review"] != rev {
 		t.Fatalf("done = %v, want both tasks named", done)
@@ -516,8 +517,66 @@ func TestReportDefaultsTheRoleFromTheTask(t *testing.T) {
 	}
 
 	// The gate reads that verdict: the round closes with no second report.
+	slotPass(t, "p", "s-rev", rev, "abc123")
 	if done := mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev); done["review"] != rev || done["dev"] != dev {
 		t.Fatalf("done = %v, want both tasks named", done)
+	}
+}
+
+// TestSpecSlotNoneThroughTheCLI is item A's exception through the CLI: a change no
+// spec governs is recorded as --slot spec --none '<why>', so the gap is on the record
+// instead of invisible, and the round still closes.
+func TestSpecSlotNoneThroughTheCLI(t *testing.T) {
+	scratch(t)
+	add := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")
+	dev, _ := add["task"].(string)
+	review := mustOK(t, "add", "--project", "p", "--goal", "review "+dev, "--review-of", dev)
+	rev, _ := review["task"].(string)
+	mustOK(t, "claim", "--project", "p", "--session", "s-dev", "--task", dev)
+	mustOK(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
+		"--state", "dev-done", "--digest", "abc123")
+	mustOK(t, "claim", "--project", "p", "--session", "s-rev", "--task", rev)
+	mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+		"--state", "pass", "--role", "review", "--command", "true", "--exit", "0", "--digest", "abc123")
+
+	spec := mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+		"--slot", "spec", "--none", "no locked spec governs this refactor", "--digest", "abc123")
+	if spec["state"] != "none" || spec["slot"] != "spec" || spec["note"] != "no locked spec governs this refactor" {
+		t.Fatalf("spec answer = %v, want state none with its reason", spec)
+	}
+	for _, slot := range []string{"tests", "regression"} {
+		mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+			"--slot", slot, "--state", "pass", "--command", "check "+slot, "--exit", "0", "--digest", "abc123")
+	}
+
+	done := mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
+	slots, _ := done["slots"].([]any)
+	if len(slots) != 3 {
+		t.Fatalf("done slots = %v, want one answer per question", done["slots"])
+	}
+	if first, _ := slots[0].(map[string]any); first["slot"] != "spec" || first["verdict"] != "none" {
+		t.Fatalf("first slot = %v, want the spec question answered as none", slots[0])
+	}
+
+	// --none belongs to the spec slot: the other two questions are answered, not
+	// waved through.
+	if code, env := invoke(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+		"--slot", "tests", "--none", "nothing to run", "--digest", "abc123"); code != 1 {
+		t.Fatalf("--none answered the tests slot: %d %v", code, env)
+	}
+}
+
+// TestReportHelpDescribesTheSlot: the flags a caller must use are in the verb's own
+// help, not only in the code.
+func TestReportHelpDescribesTheSlot(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"report", "--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("report --help exited %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{"--slot spec|tests|regression", "--none"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("report help does not describe %q:\n%s", want, stdout.String())
+		}
 	}
 }
 
@@ -553,6 +612,7 @@ func TestDoneSignsFromItsWorkingDirectory(t *testing.T) {
 	// From its own directory the same signature closes, and the record says where.
 	own := t.TempDir()
 	t.Chdir(own)
+	slotPass(t, "p", "s-rev", rev, "abc123")
 	mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
 	status := mustOK(t, "status", "--project", "p")
 	var closed string
@@ -614,6 +674,16 @@ func mustOK(t *testing.T, args ...string) map[string]any {
 		t.Fatalf("fs %s: exit %d: %v", strings.Join(args, " "), code, env)
 	}
 	return okData(t, code, env)
+}
+
+// slotPass records the three review questions as passed through the CLI: the
+// answers a close under the current rule needs.
+func slotPass(t *testing.T, project, session, task, digest string) {
+	t.Helper()
+	for _, slot := range []string{"spec", "tests", "regression"} {
+		mustOK(t, "report", "--project", project, "--session", session, "--task", task,
+			"--slot", slot, "--state", "pass", "--command", "check "+slot, "--exit", "0", "--digest", digest)
+	}
 }
 
 // TestStatusShowsTheProcessViewFromTheLauncher: the PROCESS column is what the

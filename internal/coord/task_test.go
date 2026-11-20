@@ -170,6 +170,7 @@ func TestAddRefusesAReviewOfClosedWork(t *testing.T) {
 	devDone(t, s, "p", "s-dev", dev.Tid)
 	claim(t, s, "p", "s-rev", review.Tid)
 	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+	slotPass(t, s, "p", "s-rev", review.Tid, fixtureDigest)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
 		t.Fatalf("done: %v", err)
 	}

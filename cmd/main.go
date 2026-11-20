@@ -40,19 +40,27 @@ var helpBlocks = []struct{ name, block string }{
                                      Without --task, the oldest eligible task.`},
 	{"report", `  fs report --project P --session S --task TID --state S
             [--role dev|review|runtime] [--command C --exit N]
-            [--digest D] [--note TEXT]   Record a report. This is also the
+            [--digest D] [--note TEXT]
+            [--slot spec|tests|regression] [--none '<why>']
+                                     Record a report. This is also the
                                      keepalive: there is no renew verb.
                                      A dev-done needs --digest and an existing
                                      review task. --role defaults to the task's
                                      kind: review on a review task, dev on
-                                     development work.`},
+                                     development work. --slot answers one of
+                                     the three review questions on a pass or a
+                                     fail; a spec slot no spec governs is
+                                     --slot spec --none '<why>' instead.`},
 	{"done", `  fs done   --project P --session S --task TID [--note TEXT]
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check, each
                                      one passed, and the pass names the tree
-                                     the developer finished. The directory it
-                                     is run from is recorded and may not be the
-                                     developer's checkout.`},
+                                     the developer finished. Refused too unless
+                                     the review answers spec, tests and
+                                     regression at that tree, each with a pass
+                                     (or --none for a spec slot no spec governs).
+                                     The directory it is run from is recorded
+                                     and may not be the developer's checkout.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
               [--worktree] [--wait-seconds N] [--no-wait] [--caller-pane PANE]
                                      Start one agent for one task. fs chooses the
@@ -91,6 +99,7 @@ var helpBlocks = []struct{ name, block string }{
 // usageNotes hold for every verb, so they close the full usage instead of
 // repeating inside each verb's own help.
 const usageNotes = `States report accepts: progress, dev-done, pass, fail, blocked, refused.
+A review answers three questions, one --slot each: spec, tests, regression.
 Closed is written by fs done on success, never by report.
 The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
 `
@@ -250,6 +259,8 @@ func reportCmd(args []string) (any, error) {
 	command := fs.String("command", "", "the exact check that was run")
 	digest := fs.String("digest", "", "a short digest of what the check produced")
 	note := fs.String("note", "", "one bounded line of context")
+	slot := fs.String("slot", "", "the review question this report answers: spec, tests or regression")
+	none := fs.String("none", "", "the reason no spec governs the change; answers --slot spec instead of a run")
 	var exit *int
 	fs.Func("exit", "the check's exit code", func(v string) error {
 		n, err := strconv.Atoi(v)
@@ -272,6 +283,7 @@ func reportCmd(args []string) (any, error) {
 	return coord.Report(s, coord.ReportInput{
 		Project: *project, Session: *session, Task: *task, State: *state, Role: *role,
 		Command: *command, Exit: exit, Digest: *digest, Note: *note,
+		Slot: *slot, None: *none,
 	})
 }
 

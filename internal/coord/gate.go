@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/memory"
 )
@@ -36,7 +37,60 @@ type DoneResult struct {
 	Review string        `json:"review"`
 	Dev    string        `json:"dev"`
 	Checks []CheckResult `json:"checks"`
+	// Slots are the three review questions as the close answered them. Empty on a
+	// review opened before the questions were the rule, which is asked and answered
+	// under the rule it was opened with.
+	Slots []SlotResult `json:"slots,omitempty"`
 }
+
+// SlotResult is one review question as the close answered it: which question,
+// what the reviewer recorded at the developer's tree, and the command behind it
+// when a command answered it.
+type SlotResult struct {
+	Slot    string `json:"slot"`
+	Verdict string `json:"verdict"`
+	Command string `json:"command,omitempty"`
+	Exit    *int   `json:"exit,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+// The three review questions a close answers, in the order a reader asks them:
+// are the specs honoured, are the code and tests good, and did this change break
+// anything.
+const (
+	slotSpec       = "spec"
+	slotTests      = "tests"
+	slotRegression = "regression"
+
+	// stateNone is the record of a spec slot no spec governs: the gap is written
+	// down, with its reason, instead of being left invisible. No other slot accepts
+	// it, because "no test answers this" and "nothing broke" are not questions a
+	// missing artefact can answer.
+	stateNone = "none"
+)
+
+// reviewSlots is the closed set of questions, and the order the refusal names them.
+var reviewSlots = []string{slotSpec, slotTests, slotRegression}
+
+// isReviewSlot reports whether s names one of the three questions.
+func isReviewSlot(s string) bool {
+	for _, slot := range reviewSlots {
+		if slot == s {
+			return true
+		}
+	}
+	return false
+}
+
+// slotCutoff is when the three review questions became the close rule. A review
+// task created at or after it answers all three; one created before it closes
+// under the rule it was opened under — its declared checks and the digest — so a
+// review an earlier rule opened is not made unclosable by a question it was never
+// asked. Creation is the fact the round is decided by because it is written once,
+// when the review is added, and cannot move afterwards: the claim, the verdict and
+// the close all happen later, and a rule that keyed on any of them would change
+// under a reviewer that is already working.
+var slotCutoff = time.Date(2026, 11, 20, 8, 40, 0, 0, time.UTC)
 
 // Done is the completion gate.
 //
@@ -44,9 +98,11 @@ type DoneResult struct {
 // independent check set closes anything. All of these leave the task incomplete:
 // no review task (a worker cannot complete its own work), a development task
 // already closed, no developer to be independent from, a signature made in the
-// developer's own checkout, and a required check that is missing or did not pass.
-// The evidence refusals are recorded; the ones about the shape of the round are
-// refused without a row, because there is no round to record anything about.
+// developer's own checkout, a required check that is missing or did not pass, and
+// — on a review opened at or after slotCutoff — a review question with no passing
+// answer at the developer's tree. The evidence refusals are recorded; the ones
+// about the shape of the round are refused without a row, because there is no
+// round to record anything about.
 //
 // The developer's own report of completion is never enough on its own: it is one
 // input, and this gate is the other.
@@ -148,8 +204,26 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	case reviewDigest != devDigest:
 		digestReason = fmt.Sprintf("the reviewer passed %s but the developer finished %s: a verdict names a different tree", reviewDigest, devDigest)
 	}
-	if len(missing) > 0 || len(failed) > 0 || digestReason != "" {
-		reason := refusalReason(missing, failed, digestReason)
+	// The three review questions, for a review this rule governs. They are answered
+	// against the developer's tree, so there is no question to ask until that tree
+	// is named: the refusal above already says what to do about it.
+	var (
+		slotPassed   []SlotResult
+		slotsMissing []string
+		slotsFailed  []string
+	)
+	if !review.at.Before(slotCutoff) && devDigest != "" {
+		slotPassed, slotsMissing, slotsFailed = slotsAt(events, in.Session, devDigest)
+	}
+	refused := refusal{
+		missing: missing, failed: failed, digestWhy: digestReason,
+		slotsMissing: slotsMissing, slotsFailed: slotsFailed,
+	}
+	if len(slotsMissing) > 0 || len(slotsFailed) > 0 {
+		refused.fix = fmt.Sprintf("answer each question with fs report --project %s --session %s --task %s --slot <slot> --state pass --command '<the check that answered it>' --exit <its exit code> --digest %s, or --slot spec --none '<why>' when no spec governs the change", in.Project, in.Session, review.Tid, devDigest)
+	}
+	if len(missing) > 0 || len(failed) > 0 || digestReason != "" || len(slotsMissing) > 0 || len(slotsFailed) > 0 {
+		reason := refused.reason()
 		// The task stays incomplete and the review records the reason: a refusal
 		// with no trace would make the next reader re-derive it from nothing. It is
 		// recorded as `refused`, not `fail`: the gate declined to close, which is
@@ -200,7 +274,7 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	if err := s.Retire(dev.rowID); err != nil {
 		return DoneResult{}, err
 	}
-	return DoneResult{Review: review.Tid, Dev: dev.Tid, Checks: passed}, nil
+	return DoneResult{Review: review.Tid, Dev: dev.Tid, Checks: passed, Slots: slotPassed}, nil
 }
 
 // closeFacts is everything one close records about the round it ends: who signed,
@@ -318,20 +392,88 @@ func newestPassDigest(events []Evidence, sid string) string {
 	return ""
 }
 
-// refusalReason says exactly what is missing or failing, in the order a reader
-// can act on it.
-func refusalReason(missing, failed []string, digest string) string {
+// refusal is everything a reader needs to act on a declined close: what was never
+// run, what failed, the tree a verdict names, and the review questions left
+// unanswered — plus the verb that answers a question.
+type refusal struct {
+	missing      []string
+	failed       []string
+	digestWhy    string
+	slotsMissing []string
+	slotsFailed  []string
+	fix          string
+}
+
+// reason says exactly what is missing or failing, in the order a reader can act
+// on it.
+func (r refusal) reason() string {
 	var parts []string
-	if len(missing) > 0 {
-		parts = append(parts, "no recorded reviewer run of: "+strings.Join(missing, "; "))
+	if len(r.missing) > 0 {
+		parts = append(parts, "no recorded reviewer run of: "+strings.Join(r.missing, "; "))
 	}
-	if len(failed) > 0 {
-		parts = append(parts, "failed: "+strings.Join(failed, "; "))
+	if len(r.failed) > 0 {
+		parts = append(parts, "failed: "+strings.Join(r.failed, "; "))
 	}
-	if digest != "" {
-		parts = append(parts, digest)
+	if len(r.slotsMissing) > 0 {
+		parts = append(parts, "no passing answer to the review question: "+strings.Join(r.slotsMissing, ", "))
 	}
-	return "completion refused: " + strings.Join(parts, " — ") + "; the task stays incomplete"
+	if len(r.slotsFailed) > 0 {
+		parts = append(parts, "the review question failed: "+strings.Join(r.slotsFailed, ", "))
+	}
+	if r.digestWhy != "" {
+		parts = append(parts, r.digestWhy)
+	}
+	reason := "completion refused: " + strings.Join(parts, " — ") + "; the task stays incomplete"
+	if r.fix != "" {
+		reason += " — " + r.fix
+	}
+	return reason
+}
+
+// slotsAt answers the three review questions from this reviewer's newest record of
+// each, at the tree the developer finished. A newer record is the current truth,
+// so a question asked twice is answered by the second answer.
+func slotsAt(events []Evidence, sid, tree string) (passed []SlotResult, missing, failed []string) {
+	for _, slot := range reviewSlots {
+		ev, ok := newestSlot(events, sid, slot)
+		switch {
+		case !ok:
+			missing = append(missing, slot)
+		case ev.Digest != tree:
+			missing = append(missing, fmt.Sprintf("%s (recorded for %s, not %s)", slot, ev.Digest, tree))
+		case ev.State == stateNone && slot == slotSpec:
+			passed = append(passed, SlotResult{Slot: slot, Verdict: stateNone, Note: ev.Note})
+		case ev.State == "pass":
+			passed = append(passed, SlotResult{Slot: slot, Verdict: ev.State, Command: ev.Command, Exit: ev.Exit, Note: ev.Note})
+		case ev.State == "fail":
+			failed = append(failed, slotFail(slot, ev))
+		default:
+			failed = append(failed, fmt.Sprintf("%s (recorded as %s)", slot, ev.State))
+		}
+	}
+	return passed, missing, failed
+}
+
+// newestSlot returns this reviewer's newest record of one review question. The
+// role and the session are checked: a question answered by the developer, or by
+// another session, is not an answer from the review.
+func newestSlot(events []Evidence, sid, slot string) (Evidence, bool) {
+	for _, ev := range events {
+		if ev.Role != "review" || ev.Session != sid || ev.Slot != slot {
+			continue
+		}
+		return ev, true
+	}
+	return Evidence{}, false
+}
+
+// slotFail names a question the reviewer recorded as failing, with the exit code
+// that failed it when a command produced one.
+func slotFail(slot string, ev Evidence) string {
+	if ev.Exit != nil {
+		return fmt.Sprintf("%s (exit %d)", slot, *ev.Exit)
+	}
+	return slot
 }
 
 // clip bounds a stored string. Evidence is bounded by design: no transcript, no

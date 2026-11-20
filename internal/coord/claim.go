@@ -189,6 +189,12 @@ type ReportInput struct {
 	Exit    *int
 	Digest  string
 	Note    string
+	// Slot is the review question this report answers: spec, tests or regression.
+	// Empty on every report that answers no question.
+	Slot string
+	// None is the reason a spec slot has no governing spec. It is the --none flag:
+	// a gap recorded on purpose, instead of a run nobody made.
+	None string
 }
 
 // stateClosed is written by the completion gate and never by a caller: it is the
@@ -227,7 +233,7 @@ var (
 )
 
 // eventExtra is a report row's extra: the fields the design names, plus the round a
-// verdict judged.
+// verdict judged and the review question a slot answer answers.
 type eventExtra struct {
 	State   string `json:"state"`
 	Role    string `json:"role"`
@@ -236,6 +242,7 @@ type eventExtra struct {
 	Digest  string `json:"digest,omitempty"`
 	Note    string `json:"note,omitempty"`
 	Round   int    `json:"round,omitempty"`
+	Slot    string `json:"slot,omitempty"`
 }
 
 // Evidence is one recorded report as a reader sees it: what happened, who said
@@ -249,7 +256,11 @@ type Evidence struct {
 	Note    string `json:"note,omitempty"`
 	// Round is the round of the claim that wrote this verdict or refusal. Empty on
 	// the reports that describe work inside a round, and on rows older than it.
-	Round   int        `json:"round,omitempty"`
+	Round int `json:"round,omitempty"`
+	// Slot is the review question this row answers, when it answers one. A reader
+	// can then see that the specs were honoured, the tests were good and nothing
+	// broke, without asking the reviewer.
+	Slot    string     `json:"slot,omitempty"`
 	Session string     `json:"session"`
 	At      *time.Time `json:"at,omitempty"`
 	Age     *float64   `json:"age_seconds,omitempty"`
@@ -273,12 +284,15 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	if err := memory.ValidID("task", in.Task); err != nil {
 		return Evidence{}, err
 	}
-	if !states[in.State] {
-		return Evidence{}, fmt.Errorf("unknown state %q: one of progress, dev-done, pass, fail, blocked, refused", in.State)
-	}
 	// One normalisation, at write time: a digest is compared as recorded, with no
 	// abbreviation folding, so what a reader sees is what the gate compared.
 	in.Digest = strings.TrimSpace(in.Digest)
+	if err := validateSlot(&in); err != nil {
+		return Evidence{}, err
+	}
+	if in.State != stateNone && !states[in.State] {
+		return Evidence{}, fmt.Errorf("unknown state %q: one of progress, dev-done, pass, fail, blocked, refused", in.State)
+	}
 	// A role that was given is one of the three, or a refusal. An omitted role is
 	// derived from the task below: the work says who is reporting it, and a verdict
 	// written under the wrong role is one the gate cannot see.
@@ -318,6 +332,12 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	if err != nil {
 		return Evidence{}, err
 	}
+	// Is this a review question, or a report on work in progress? A slot is the
+	// review's question, and a slot recorded on development work answers nothing:
+	// the gate reads slots on the review task.
+	if in.Slot != "" && task.Kind == KindDev {
+		return Evidence{}, fmt.Errorf("%s is development work: a slot is a review question — record it on the review task", task.Tid)
+	}
 	// The role follows the task when the caller named none: a hand-run reviewer that
 	// omits --role still records a verdict the gate can read. A role the caller named
 	// is respected, because the harness's runtime observations name themselves.
@@ -345,6 +365,7 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	extra, err := json.Marshal(eventExtra{
 		State: in.State, Role: in.Role, Command: in.Command,
 		Exit: in.Exit, Digest: in.Digest, Note: in.Note, Round: round,
+		Slot: in.Slot,
 	})
 	if err != nil {
 		return Evidence{}, err
@@ -365,7 +386,52 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	return Evidence{
 		State: in.State, Role: in.Role, Command: in.Command, Exit: in.Exit,
 		Digest: in.Digest, Note: in.Note, Session: in.Session, At: &at, Round: round,
+		Slot: in.Slot,
 	}, nil
+}
+
+// validateSlot checks the one flag combination that turns a report into a review
+// answer, and its one exception. It runs before any read, because a malformed
+// answer is a command-line error, not a fact about a task.
+func validateSlot(in *ReportInput) error {
+	if in.Slot != "" && !isReviewSlot(in.Slot) {
+		return fmt.Errorf("unknown slot %q: one of spec, tests, regression", in.Slot)
+	}
+	if in.State == stateNone && in.None == "" {
+		return errors.New("--state none is not reported directly: a spec slot no spec governs is recorded as --slot spec --none '<why>'")
+	}
+	if in.None != "" {
+		if in.Slot != slotSpec {
+			return fmt.Errorf("--none records that no spec governs the change, so it answers --slot spec, not %q", in.Slot)
+		}
+		if in.State != "" {
+			return errors.New("--none is the answer for the spec slot: drop --state")
+		}
+		if in.Command != "" || in.Exit != nil {
+			return errors.New("--none records that no check answered the spec question: drop --command and --exit")
+		}
+		if in.Note != "" {
+			return errors.New("--none carries its reason: drop --note")
+		}
+		in.State, in.Note = stateNone, in.None
+	}
+	if in.Slot == "" {
+		return nil
+	}
+	// A question is answered by a pass or a fail, so a question that failed is
+	// named as failed rather than left to look unanswered.
+	if in.State != "pass" && in.State != "fail" && in.State != stateNone {
+		return fmt.Errorf("slot %s is answered by --state pass or --state fail (or --none for spec), not %q", in.Slot, in.State)
+	}
+	// A question answers a change: an answer that names no tree cannot be compared
+	// with the tree the developer finished, so it is refused here.
+	if in.Digest == "" {
+		return fmt.Errorf("slot %s names no tree: record --digest <the commit under review>", in.Slot)
+	}
+	if in.Role != "" && in.Role != "review" {
+		return fmt.Errorf("slot %s is the review's question: record it with --role review", in.Slot)
+	}
+	return nil
 }
 
 // roleOf names the role a report belongs to when the caller did not say. The session
@@ -408,7 +474,7 @@ func eventsFor(ix *memory.Index, tid string, now time.Time) []Evidence {
 		age := now.Sub(at).Seconds()
 		out = append(out, Evidence{
 			State: ex.State, Role: ex.Role, Command: ex.Command, Exit: ex.Exit,
-			Digest: ex.Digest, Note: ex.Note, Round: ex.Round,
+			Digest: ex.Digest, Note: ex.Note, Round: ex.Round, Slot: ex.Slot,
 			Session: sid, At: &at, Age: &age,
 			index: idx,
 		})
