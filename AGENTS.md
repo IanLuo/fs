@@ -17,6 +17,8 @@ nix profile install .#default                          # fs on PATH, like memsto
 nix develop -c sh -c 'go build ./... && go vet ./... && gofmt -l . | grep -v ^vendor/'
 nix develop -c sh -c 'go test ./... -count=1'
 nix develop -c go test ./internal/coord -count=1 -race   # the barrier + binding tests
+scripts/changed-needs-test.sh <parent>                  # the tests-slot question: a
+   # non-test .go change with no test change exits 1 and prints one line for the note
 ```
 
 There is no network in this environment: `vendor/` is committed and `vendorHash = null`,
