@@ -15,6 +15,7 @@ func reviewFixture(t *testing.T) (*memory.Store, coord.Task, coord.Task) {
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
 	claim(t, s, "p", "s-rev", review.Tid)
 	return s, dev, review
 }
@@ -48,7 +49,7 @@ func TestDevDoneNeedsAReviewTask(t *testing.T) {
 
 	// With the review task in place the same report is accepted.
 	addReview(t, s, "p", dev.Tid)
-	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done"})
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done", Digest: "abc1234"})
 	st, err = coord.Status(s, coord.StatusInput{Project: "p"})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +103,96 @@ func TestRoundStateMarksAStalledRound(t *testing.T) {
 	report(t, s, coord.ReportInput{Project: "p", Session: "s-rev", Task: review.Tid, Role: "review", State: "fail", Note: "parser misses empty input"})
 	if got := round()[review.Tid]; got != "" {
 		t.Fatalf("round_state = %q, want empty once a verdict is recorded", got)
+	}
+}
+
+// TestDevDoneNeedsADigest is P1-1's first half: a dev-done names the tree it
+// finished, because the review is a judgement about one commit. Without it a later
+// question — which commit did this pass bless? — has no answer in the records.
+func TestDevDoneNeedsADigest(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+
+	_, err := coord.Report(s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done"})
+	if err == nil {
+		t.Fatal("a dev-done with no digest was recorded")
+	}
+	if !strings.Contains(err.Error(), "--digest") {
+		t.Fatalf("refusal %q does not name --digest", err)
+	}
+	// A fail or a progress report needs none: a fail may be against a draft.
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "progress", Note: "reworking"})
+}
+
+// TestDoneComparesTheReviewersTree is P1-1's second half: the reviewer's passing
+// run names the tree it ran against, and the gate refuses to close a round when
+// that is not the tree the developer finished.
+func TestDoneComparesTheReviewersTree(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
+	claim(t, s, "p", "s-rev", review.Tid)
+
+	// The reviewer ran the declared check against another tree: the checks pass,
+	// and the verdict would name a tree the developer never finished.
+	report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
+		State: "pass", Command: dev.Checks[0], Exit: exit(0), Digest: "def5678",
+	})
+	_, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid})
+	if err == nil {
+		t.Fatal("completion passed on a reviewer run against a different tree")
+	}
+	for _, want := range []string{"def5678", fixtureDigest} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+	assertOpen(t, s, dev.Tid)
+	assertOpen(t, s, review.Tid)
+
+	// A pass that names no tree cannot be compared, so it cannot close either.
+	report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
+		State: "pass", Command: dev.Checks[0], Exit: exit(0),
+	})
+	_, err = coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid})
+	if err == nil {
+		t.Fatal("completion passed on a reviewer run that named no tree")
+	}
+	if !strings.Contains(err.Error(), "no digest") || !strings.Contains(err.Error(), fixtureDigest) {
+		t.Fatalf("refusal %q does not name the missing digest and the tree it must match", err)
+	}
+
+	// Re-run against the tree the developer finished: equal digests close the round.
+	report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
+		State: "pass", Command: dev.Checks[0], Exit: exit(0), Digest: fixtureDigest,
+	})
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
+		t.Fatalf("equal digests did not close the round: %v", err)
+	}
+
+	// The closed round still says which tree it blessed: the developer's handover and
+	// the reviewer's run both carry it, in status.
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, task := range st.Projects[0].Tasks {
+		for _, ev := range task.Evidence {
+			if ev.Digest == fixtureDigest {
+				seen[task.Task] = ev.State
+			}
+		}
+	}
+	if seen[dev.Tid] != "dev-done" || seen[review.Tid] != "pass" {
+		t.Fatalf("status digests = %v, want the dev-done and the pass naming %s", seen, fixtureDigest)
 	}
 }
 
@@ -333,6 +424,7 @@ func TestDoneRerunsTheNewestResult(t *testing.T) {
 	}
 	review2 := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev2", dev.Tid)
+	devDone(t, s, "p", "s-dev2", dev.Tid)
 	claim(t, s, "p", "s-rev2", review2.Tid)
 	runCheck(t, s, "p", "s-rev2", review2.Tid, dev.Checks[0], 1)
 	runCheck(t, s, "p", "s-rev2", review2.Tid, dev.Checks[0], 0)

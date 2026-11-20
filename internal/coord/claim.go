@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/flagship-dev/flagship/internal/memory"
@@ -253,6 +254,9 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	if !states[in.State] {
 		return Evidence{}, fmt.Errorf("unknown state %q: one of progress, dev-done, pass, fail, blocked, refused", in.State)
 	}
+	// One normalisation, at write time: a digest is compared as recorded, with no
+	// abbreviation folding, so what a reader sees is what the gate compared.
+	in.Digest = strings.TrimSpace(in.Digest)
 	if in.Role == "" {
 		in.Role = "dev"
 	}
@@ -301,6 +305,12 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 		if task.ParentDev == "" && !hasReviewTask(rows, task.Tid) {
 			return Evidence{}, fmt.Errorf("no review task for %s: a development task reports dev-done only once its review exists — run `fs add --project %s --goal 'review %s' --review-of %s`",
 				task.Tid, in.Project, task.Tid, task.Tid)
+		}
+		// A dev-done names the tree it finished: the review is a judgement about one
+		// commit, and a verdict that cannot name it answers "which change did this
+		// pass bless?" with nothing.
+		if in.Digest == "" {
+			return Evidence{}, fmt.Errorf("no digest: a dev-done names the tree it finished (`--digest <commit>`), so the review can name what it judged")
 		}
 	}
 	extra, err := json.Marshal(eventExtra{

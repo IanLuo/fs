@@ -108,8 +108,25 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 		}
 		passed = append(passed, CheckResult{Command: check, Exit: *ev.Exit, Session: ev.Session})
 	}
-	if len(missing) > 0 || len(failed) > 0 {
-		reason := refusalReason(missing, failed)
+	// A verdict names the tree it judged, and it is the tree the developer
+	// finished: the newest dev-done names that tree, and the reviewer's newest
+	// passing run names the tree it ran against. Two different trees are two
+	// different rounds, and the gate will not bless one with the other's name.
+	// Compared exactly as recorded — a git abbreviation is a different string, and
+	// guessing which one was meant is how a gate stops saying what it checked.
+	devDigest := newestDevDoneDigest(eventsFor(ix, dev.Tid, now))
+	reviewDigest := newestPassDigest(events, in.Session)
+	var digestReason string
+	switch {
+	case devDigest == "":
+		digestReason = fmt.Sprintf("%s has no dev-done digest: a verdict must name the tree it judged, so the developer reports dev-done again with --digest", dev.Tid)
+	case reviewDigest == "":
+		digestReason = fmt.Sprintf("the reviewer's pass names no digest: report the passing run with --digest %s", devDigest)
+	case reviewDigest != devDigest:
+		digestReason = fmt.Sprintf("the reviewer passed %s but the developer finished %s: a verdict names a different tree", reviewDigest, devDigest)
+	}
+	if len(missing) > 0 || len(failed) > 0 || digestReason != "" {
+		reason := refusalReason(missing, failed, digestReason)
 		// The task stays incomplete and the review records the reason: a refusal
 		// with no trace would make the next reader re-derive it from nothing. It is
 		// recorded as `refused`, not `fail`: the gate declined to close, which is
@@ -155,15 +172,42 @@ func newestCheck(events []Evidence, sid, command string) (Evidence, bool) {
 	return Evidence{}, false
 }
 
+// newestDevDoneDigest is the tree the developer last reported finished. The
+// newest dev-done wins: a developer that reworked and reported again names the
+// later tree, and the earlier one is history.
+func newestDevDoneDigest(events []Evidence) string {
+	for _, ev := range events {
+		if ev.Role == "dev" && ev.State == "dev-done" {
+			return strings.TrimSpace(ev.Digest)
+		}
+	}
+	return ""
+}
+
+// newestPassDigest is the tree this reviewer's newest passing run names. A pass is
+// the reviewer saying "this tree runs the checks green", so the newest one is the
+// tree it is asking to close.
+func newestPassDigest(events []Evidence, sid string) string {
+	for _, ev := range events {
+		if ev.Role == "review" && ev.Session == sid && ev.State == "pass" {
+			return strings.TrimSpace(ev.Digest)
+		}
+	}
+	return ""
+}
+
 // refusalReason says exactly what is missing or failing, in the order a reader
 // can act on it.
-func refusalReason(missing, failed []string) string {
+func refusalReason(missing, failed []string, digest string) string {
 	var parts []string
 	if len(missing) > 0 {
 		parts = append(parts, "no recorded reviewer run of: "+strings.Join(missing, "; "))
 	}
 	if len(failed) > 0 {
 		parts = append(parts, "failed: "+strings.Join(failed, "; "))
+	}
+	if digest != "" {
+		parts = append(parts, digest)
 	}
 	return "completion refused: " + strings.Join(parts, " — ") + "; the task stays incomplete"
 }

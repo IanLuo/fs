@@ -167,6 +167,7 @@ func TestAddRefusesAReviewOfClosedWork(t *testing.T) {
 	if _, err := coord.Claim(s, coord.ClaimInput{Project: "p", Session: "s-dev", Task: dev.Tid}); err != nil {
 		t.Fatal(err)
 	}
+	devDone(t, s, "p", "s-dev", dev.Tid)
 	claim(t, s, "p", "s-rev", review.Tid)
 	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {

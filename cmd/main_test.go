@@ -468,7 +468,8 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	}
 	// The passing run: completion.
 	mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
-		"--state", "pass", "--role", "review", "--command", "go test ./...", "--exit", "0")
+		"--state", "pass", "--role", "review", "--command", "go test ./...", "--exit", "0",
+		"--digest", "abc123")
 	done := mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
 	if done["dev"] != dev || done["review"] != rev {
 		t.Fatalf("done = %v, want both tasks named", done)

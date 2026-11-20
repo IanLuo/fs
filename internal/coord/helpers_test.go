@@ -96,7 +96,7 @@ func countKind(rs []memory.Row, kind string) int {
 }
 
 // runCheck records a check as a reviewer would: role=review, the exact command and
-// the exit code it produced.
+// the exit code it produced, against the tree the fixture's developer finished.
 func runCheck(t *testing.T, s *memory.Store, project, session, task, command string, code int) {
 	t.Helper()
 	state := "fail"
@@ -105,6 +105,20 @@ func runCheck(t *testing.T, s *memory.Store, project, session, task, command str
 	}
 	report(t, s, coord.ReportInput{
 		Project: project, Session: session, Task: task, Role: "review",
-		State: state, Command: command, Exit: exit(code),
+		State: state, Command: command, Exit: exit(code), Digest: fixtureDigest,
 	})
 }
+
+// devDone records the development handover the gate now requires: dev-done, with
+// the tree it finished.
+func devDone(t *testing.T, s *memory.Store, project, session, task string) {
+	t.Helper()
+	report(t, s, coord.ReportInput{
+		Project: project, Session: session, Task: task, State: "dev-done",
+		Digest: fixtureDigest, Note: "ready for review",
+	})
+}
+
+// fixtureDigest is the tree the test rounds develop and review. One value, so a
+// pass and a dev-done agree unless a test deliberately makes them differ.
+const fixtureDigest = "abc1234"

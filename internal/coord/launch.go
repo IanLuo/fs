@@ -336,10 +336,11 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 		for _, c := range task.Checks {
 			b.WriteString("   - " + c + "\n")
 		}
-		b.WriteString("\n3. Record each run as you finish it, with its real exit code:\n")
+		b.WriteString("\n3. Record each run as you finish it, with its real exit code, against the commit you are reviewing:\n")
 		b.WriteString("   fs report --project " + project + " --session " + sid + " --task " + task.Tid +
-			" --role review --state pass --command '<the exact command>' --exit <exit code>\n")
-		b.WriteString("   Use --state fail when the exit was non-zero. Never report a check you did not run.\n\n")
+			" --role review --state pass --command '<the exact command>' --exit <exit code> --digest '<the commit under review>'\n")
+		b.WriteString("   Use --state fail when the exit was non-zero. Never report a check you did not run.\n")
+		b.WriteString("   --digest is what the gate compares with the developer's dev-done: name the commit you reviewed, and a verdict for a different tree is refused.\n\n")
 		b.WriteString("4. While you still have reading to do, keep the lease alive: " +
 			"fs report --project " + project + " --session " + sid + " --task " + task.Tid +
 			" --role review --state progress --note reviewing, at least every 90 s.\n")
@@ -355,10 +356,11 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 	for _, c := range task.Checks {
 		b.WriteString("   - " + c + "\n")
 	}
-	b.WriteString("\n5. When the work is complete: fs report --project " + project + " --session " + sid + " --task " + task.Tid +
-		" --state dev-done --note '<what you changed>' --digest '<commit>'. This does not complete the task.\n\n")
-	b.WriteString("6. Then create its review and start it yourself, which is how your task can close: fs add --project " + project +
-		" --goal 'review " + task.Tid + "' --review-of " + task.Tid + ", then fs dispatch --project " + project +
+	b.WriteString("\n5. Create its review task; the handover below is refused until it exists: fs add --project " + project +
+		" --goal 'review " + task.Tid + "' --review-of " + task.Tid + "\n\n")
+	b.WriteString("6. When the work is complete: fs report --project " + project + " --session " + sid + " --task " + task.Tid +
+		" --state dev-done --digest '<commit>' --note '<what you changed>'. This does not complete the task, and it is refused without a --digest naming the commit you finished.\n\n")
+	b.WriteString("7. Then start the review, which is how your task can close: fs dispatch --project " + project +
 		" --task <the review task id>. You do not review your own work: the reviewer is a fresh session that runs the same checks.\n")
 	return b.String()
 }

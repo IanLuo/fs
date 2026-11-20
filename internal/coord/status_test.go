@@ -152,6 +152,7 @@ func TestStatusShowsDoneAndEvidence(t *testing.T) {
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
 	claim(t, s, "p", "s-rev", review.Tid)
 	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {

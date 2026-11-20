@@ -88,6 +88,17 @@ func TestDispatchStartsOneAgentAndRecordsIt(t *testing.T) {
 	if !strings.Contains(fake.started[0].Prompt, "fs claim") || !strings.Contains(fake.started[0].Prompt, "fs report") {
 		t.Errorf("prompt does not say how to claim and report:\n%s", fake.started[0].Prompt)
 	}
+	// The handover is refused until the review task exists, so the prompt asks for
+	// the review task before the dev-done, not after it.
+	prompt := fake.started[0].Prompt
+	addReviewAt := strings.Index(prompt, "--review-of "+task.Tid)
+	devDoneAt := strings.Index(prompt, "--state dev-done")
+	if addReviewAt < 0 || devDoneAt < 0 || addReviewAt > devDoneAt {
+		t.Errorf("prompt does not create the review task before the dev-done:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "--state dev-done --digest") {
+		t.Errorf("dev prompt does not carry the digest a dev-done needs:\n%s", prompt)
+	}
 	recs := launchRows(t, s, "p")
 	if len(recs) != 1 {
 		t.Fatalf("launch records = %d, want 1", len(recs))
@@ -220,7 +231,7 @@ func TestDispatchAsksAReviewerForChecks(t *testing.T) {
 		t.Fatalf("dispatch review: %v", err)
 	}
 	prompt := fake.started[0].Prompt
-	for _, want := range []string{"independent reviewer", dev.Checks[0], "--role review", "--exit", "not trust the task text"} {
+	for _, want := range []string{"independent reviewer", dev.Checks[0], "--role review", "--exit", "--digest", "not trust the task text"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("reviewer prompt is missing %q:\n%s", want, prompt)
 		}
@@ -238,6 +249,7 @@ func TestReapClosesOnlyFinishedRounds(t *testing.T) {
 	dev := add(t, s, "p")
 	review := addReview(t, s, "p", dev.Tid)
 	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
 	started, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)

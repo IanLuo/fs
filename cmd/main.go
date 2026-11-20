@@ -32,18 +32,23 @@ var helpBlocks = []struct{ name, block string }{
 	{"add", `  fs add    --project P --goal G --check C [--check C]... [--path DIR]
             [--review-of TID]        Record a task. A review task names the
                                      development task it reviews and runs that
-                                     task's declared checks.`},
+                                     task's declared checks. One open review
+                                     per development task, until it has a
+                                     verdict.`},
 	{"claim", `  fs claim  --project P --session S [--task TID]
                                      Bind this session to one task and hold it.
                                      Without --task, the oldest eligible task.`},
 	{"report", `  fs report --project P --session S --task TID --state S
             [--role dev|review|runtime] [--command C --exit N]
             [--digest D] [--note TEXT]   Record a report. This is also the
-                                     keepalive: there is no renew verb.`},
+                                     keepalive: there is no renew verb.
+                                     A dev-done needs --digest and an existing
+                                     review task.`},
 	{"done", `  fs done   --project P --session S --task TID [--note TEXT]
                                      Complete a review. Refused unless this
-                                     reviewer ran every declared check and each
-                                     one passed.`},
+                                     reviewer ran every declared check, each
+                                     one passed, and the pass names the tree
+                                     the developer finished.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
               [--wait-seconds N] [--no-wait] [--caller-pane PANE]
                                      Start one agent for one task. fs chooses the

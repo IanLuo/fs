@@ -70,6 +70,7 @@ func TestBindingSurvivesCompletion(t *testing.T) {
 
 	claim(t, s, "p", "s-dev", a.Tid)
 	claim(t, s, "p", "s-rev", review.Tid)
+	devDone(t, s, "p", "s-dev", a.Tid)
 	runCheck(t, s, "p", "s-rev", review.Tid, a.Checks[0], 0)
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
 		t.Fatalf("done: %v", err)
