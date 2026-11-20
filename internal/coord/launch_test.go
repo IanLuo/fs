@@ -231,7 +231,7 @@ func TestDispatchAsksAReviewerForChecks(t *testing.T) {
 		t.Fatalf("dispatch review: %v", err)
 	}
 	prompt := fake.started[0].Prompt
-	for _, want := range []string{"independent reviewer", dev.Checks[0], "--role review", "--exit", "--digest", "not trust the task text"} {
+	for _, want := range []string{"independent reviewer", dev.Checks[0], "--role review", "--exit", "--digest", "not trust the task text", "not the developer's checkout"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("reviewer prompt is missing %q:\n%s", want, prompt)
 		}

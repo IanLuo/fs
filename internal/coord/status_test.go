@@ -170,8 +170,16 @@ func TestStatusShowsDoneAndEvidence(t *testing.T) {
 	if states[dev.Tid].State != "done" || states[review.Tid].State != "done" {
 		t.Fatalf("states = %v, want both done", states)
 	}
+	// The reviewer's run stays visible after the close: closing adds a row to the
+	// evidence, it does not replace what the verdict rests on.
 	ev := states[review.Tid].Evidence
-	if len(ev) != 1 || ev[0].Command != dev.Checks[0] || ev[0].Exit == nil || *ev[0].Exit != 0 || ev[0].Session != "s-rev" {
+	var passing bool
+	for _, got := range ev {
+		if got.State == "pass" && got.Command == dev.Checks[0] && got.Exit != nil && *got.Exit == 0 && got.Session == "s-rev" {
+			passing = true
+		}
+	}
+	if !passing {
 		t.Fatalf("evidence = %+v, want the reviewer's run with its command, exit and session", ev)
 	}
 }

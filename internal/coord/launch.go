@@ -346,6 +346,7 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 			" --role review --state progress --note reviewing, at least every 90 s.\n")
 		b.WriteString("   If a write is refused because the lease expired, re-run the claim with this same session id: it takes the next round and you can continue.\n\n")
 		b.WriteString("5. If every check passed: fs done --project " + project + " --session " + sid + " --task " + task.Tid + ", then stop.\n")
+		b.WriteString("   Run it from the directory you reviewed in, not the developer's checkout: the gate refuses a signature made in the directory the developer recorded.\n")
 		b.WriteString("   If a check failed or could not be run: report --state fail with a --note saying what is wrong, then stop. Do not fix the code and do not run done: a fresh reviewer gets the next round.\n")
 		return b.String()
 	}

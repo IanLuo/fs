@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/memory"
@@ -15,6 +16,11 @@ type DoneInput struct {
 	Session string
 	Task    string
 	Note    string
+	// Dir is the directory the reviewer signs from: its working directory at the
+	// moment it asks. A review is a judgement made in its own tree, so the gate
+	// refuses a signature made in the developer's checkout. Empty means the caller
+	// could not say which directory it is in, and then there is no fact to compare.
+	Dir string
 }
 
 // CheckResult is one required check as the completion record keeps it: the exact
@@ -35,10 +41,12 @@ type DoneResult struct {
 // Done is the completion gate.
 //
 // Completion is requested on a review task, by the reviewer, and only a passing
-// independent check set closes anything. All four of these leave the task
-// incomplete and record why: no review task (a worker cannot complete its own
-// work), a development task already closed, no developer to be independent from,
-// and a required check that is missing or did not pass.
+// independent check set closes anything. All of these leave the task incomplete:
+// no review task (a worker cannot complete its own work), a development task
+// already closed, no developer to be independent from, a signature made in the
+// developer's own checkout, and a required check that is missing or did not pass.
+// The evidence refusals are recorded; the ones about the shape of the round are
+// refused without a row, because there is no round to record anything about.
 //
 // The developer's own report of completion is never enough on its own: it is one
 // input, and this gate is the other.
@@ -85,6 +93,21 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	}
 	if developer.Session == in.Session {
 		return DoneResult{}, fmt.Errorf("session %s holds %s; a reviewer must be a different session from the developer", in.Session, dev.Tid)
+	}
+	// Where the reviewer signs from is part of the review, not a detail of its
+	// shell: a round completed in the developer's own checkout is one context, which
+	// is the one thing a review cannot be. Both paths are resolved before they are
+	// compared — one directory has many spellings, and a textual comparison refuses
+	// the wrong signature as often as it lets the right one through. A developer row
+	// with no recorded path is a round from before paths were recorded: there is no
+	// fact to compare, so nothing is refused.
+	if in.Dir != "" && dev.ProjectPath != "" {
+		signed, developed := sameDir(in.Dir), sameDir(dev.ProjectPath)
+		if signed == developed {
+			return DoneResult{}, fmt.Errorf(
+				"completion refused: this signature is from %s, and %s was developed in %s: both resolve to %s, one directory, so the review is not independent — sign from the review worktree; the task stays incomplete",
+				in.Dir, dev.Tid, dev.ProjectPath, signed)
+		}
 	}
 
 	// Every check the development task declared, against the newest run of that
@@ -145,6 +168,14 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 		return DoneResult{}, errors.New(reason)
 	}
 
+	// A passing review is the one step that used to leave no row of its own. Record
+	// it before the rows are closed: a failure between the two is recoverable — the
+	// retry closes and records again — where closing first would leave a closed
+	// round that no retry could ever record.
+	if err := writeClose(s, scope, ix, review.Tid, in.Session, in.Dir, devDigest); err != nil {
+		return DoneResult{}, err
+	}
+
 	// Passing. Close the review first, then the development task it reviewed. That
 	// order is the recoverable one: a failure between the two leaves the
 	// development task open, and a rerun closes it — while closing the development
@@ -157,6 +188,41 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 		return DoneResult{}, err
 	}
 	return DoneResult{Review: review.Tid, Dev: dev.Tid, Checks: passed}, nil
+}
+
+// writeClose records one close: the round ended, in this session, from this
+// directory, at the tree the signature blessed. It is one append-only row of the
+// ordinary report shape, so a later reader can measure a round — claim to close,
+// dev-done to close — without a chat log and without a second store.
+func writeClose(s *memory.Store, scope string, ix *memory.Index, tid, sid, dir, digest string) error {
+	note, text := "", "closed"
+	if dir != "" {
+		// The directory travels in the note because the record has one bounded
+		// free-text line and no field to spare: the close is an ordinary report.
+		note = "signed from " + dir
+		text = "closed: " + note
+	}
+	extra, err := json.Marshal(eventExtra{
+		State: stateClosed, Role: "review", Digest: digest, Note: clip(note, maxNote),
+	})
+	if err != nil {
+		return err
+	}
+	return s.PutEvent(scope, tid, sid, ix.MaxEvent(tid, sid)+1, text, string(extra))
+}
+
+// sameDir is the string two directories are compared as: symlinks followed where
+// the path exists, cleaned otherwise. A path that is gone still compares as itself,
+// because whether it exists is a different question from whether it is the
+// developer's.
+func sameDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(dir)
 }
 
 // newestCheck returns the newest review-run result for one exact command by the

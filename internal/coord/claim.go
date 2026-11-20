@@ -191,6 +191,12 @@ type ReportInput struct {
 	Note    string
 }
 
+// stateClosed is written by the completion gate and never by a caller: it is the
+// record that a round ended, when, and where the reviewer signed from. It is not in
+// `states`, because a caller that could report a close could close a round without
+// passing the gate.
+const stateClosed = "closed"
+
 // The states a report may carry, and the roles that may report. Both are closed
 // sets: a typo is refused rather than stored as a state no reader understands.
 var (

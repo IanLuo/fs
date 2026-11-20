@@ -48,7 +48,9 @@ var helpBlocks = []struct{ name, block string }{
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check, each
                                      one passed, and the pass names the tree
-                                     the developer finished.`},
+                                     the developer finished. The directory it
+                                     is run from is recorded and may not be the
+                                     developer's checkout.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
               [--wait-seconds N] [--no-wait] [--caller-pane PANE]
                                      Start one agent for one task. fs chooses the
@@ -282,7 +284,15 @@ func doneCmd(args []string) (any, error) {
 	}
 	defer s.Close()
 
-	return coord.Done(s, coord.DoneInput{Project: *project, Session: *session, Task: *task, Note: *note})
+	// The directory the reviewer signs from is recorded and checked against the
+	// developer's checkout, so a signature whose directory cannot be named is a
+	// refusal: the one fact this gate compares would be missing.
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("cannot say which directory this signature is from: %w", err)
+	}
+
+	return coord.Done(s, coord.DoneInput{Project: *project, Session: *session, Task: *task, Note: *note, Dir: dir})
 }
 
 func dispatchCmd(args []string) (any, error) {

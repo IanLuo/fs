@@ -362,9 +362,14 @@ func newestReported(events []Evidence, role string) string {
 
 // observed picks the newest report of one kind and says whether it still stands.
 // Nothing observed, or observed too long ago, is unknown — never idle, never
-// alive, never done.
+// alive, never done. A close is skipped: it is the round's end, not an observation
+// of an agent, and letting it win here would invent a state the vocabulary does not
+// have for the callers that read these cells.
 func observed(events []Evidence, roles ...string) Observed {
 	for _, ev := range events {
+		if ev.State == stateClosed {
+			continue
+		}
 		want := false
 		for _, role := range roles {
 			if ev.Role == role {

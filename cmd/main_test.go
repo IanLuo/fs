@@ -494,6 +494,60 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	}
 }
 
+// TestDoneSignsFromItsWorkingDirectory is P1-2 through the CLI: the gate reads the
+// directory the command runs in, so a reviewer signing from the developer's
+// checkout is refused and a signature from anywhere else closes the round.
+func TestDoneSignsFromItsWorkingDirectory(t *testing.T) {
+	scratch(t)
+	checkout := t.TempDir()
+	add := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true", "--path", checkout)
+	dev, _ := add["task"].(string)
+	review := mustOK(t, "add", "--project", "p", "--goal", "review "+dev, "--review-of", dev)
+	rev, _ := review["task"].(string)
+	mustOK(t, "claim", "--project", "p", "--session", "s-dev", "--task", dev)
+	mustOK(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
+		"--state", "dev-done", "--digest", "abc123")
+	mustOK(t, "claim", "--project", "p", "--session", "s-rev", "--task", rev)
+	mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+		"--state", "pass", "--role", "review", "--command", "true", "--exit", "0", "--digest", "abc123")
+
+	// The reviewer is standing in the developer's checkout: refused, and the refusal
+	// names both the task and the directory the command ran in.
+	t.Chdir(checkout)
+	code, env := invoke(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
+	if code != 1 {
+		t.Fatalf("completion passed from the developer's checkout: %d %v", code, env)
+	}
+	msg, _ := env["error"].(string)
+	if !strings.Contains(msg, checkout) || !strings.Contains(msg, dev) {
+		t.Fatalf("refusal %q does not name %s and the directory %s", msg, dev, checkout)
+	}
+
+	// From its own directory the same signature closes, and the record says where.
+	own := t.TempDir()
+	t.Chdir(own)
+	mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev)
+	status := mustOK(t, "status", "--project", "p")
+	var closed string
+	projects, _ := status["projects"].([]any)
+	for _, raw := range projects[0].(map[string]any)["tasks"].([]any) {
+		task := raw.(map[string]any)
+		if task["task"] != rev {
+			continue
+		}
+		events, _ := task["evidence"].([]any)
+		for _, rawEvent := range events {
+			ev := rawEvent.(map[string]any)
+			if ev["state"] == "closed" {
+				closed, _ = ev["note"].(string)
+			}
+		}
+	}
+	if !strings.Contains(closed, own) {
+		t.Fatalf("close note = %q, want the signing directory %s", closed, own)
+	}
+}
+
 // roundStates reads one project's derived round state per task from the status
 // envelope: the field a caller sees between a round's steps.
 func roundStates(t *testing.T, project string) map[string]string {

@@ -44,7 +44,10 @@ A round has two gated handovers below `claim`. `dev-done` is refused until the r
 task exists and carries the tree the developer finished (`--digest <commit>`);
 `fs add --review-of` is refused while one open review of that task has no verdict yet.
 `fs done` then compares the developer's digest with the one the reviewer's passing run
-names, and closes nothing when they differ.
+names, and closes nothing when they differ. It also compares its own working directory
+with the development task's recorded path, and closes nothing when they are one directory:
+the reviewer signs from its own tree, and the close records the directory it was signed
+from.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
@@ -99,7 +102,7 @@ What each verb writes:
 | `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write; a review is refused while one open review of the same task has no verdict |
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
-| `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's |
+| `done` | one `fs.event` on the review, then closes the review row, then the development row | the row carries `closed`, the tree it blessed and the directory the reviewer signed from; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout |
 | `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
@@ -183,20 +186,25 @@ done on a development task                  → refused: a worker cannot complet
 same session as the developer               → refused: a reviewer must be a different session
 the development task was never claimed      → refused: there is no developer to be independent from
 reviewed task already closed                → refused: a completed task is never reopened
+signed from the developer's checkout        → refused, naming both directories
 no dev-done digest on the development task  → refused: the verdict must name the tree it judged
 no review-role run of a declared check      → refused, and a `refused` event records why
 newest run of a check exits non-zero        → refused, naming the check and its exit
 the newest passing run names another tree   → refused, naming both digests
-all checks pass, run by this reviewer       → closes the review, then the development task
+all checks pass, run by this reviewer       → records the close, then closes the review and the development task
 ```
 
 The gate matches the newest `role=review` event from this session with the exact declared
 command, so a reviewer that fixed and re-ran reports the rerun.
 
-A verdict names the tree it judged. The developer's newest `dev-done` carries the commit it
-finished; the reviewer's newest `pass` carries the commit it ran against. fs compares the
-two exactly as recorded — `abc123` is not `abc1234`, because guessing which one was meant is
-how a gate stops saying what it checked — and refuses `done` when they differ, naming both.
+A verdict names the tree it judged, and the close names the directory it was signed from.
+`fs done` compares its own working directory with the development task's recorded `--path`,
+both resolved through symlinks first, and refuses when they are one directory: a review is
+a judgement made in its own tree, and a signature from the developer's checkout is the same
+context twice. A development task with no recorded path (a row written before `--path`)
+has nothing to compare, so nothing is refused. The check makes the claim **checkable, not
+true**: a reviewer can `cd` elsewhere before signing, and fs never runs anything, so what
+the records hold is what each party declared.
 
 `round_state` in the JSON is where the round stands between its steps, derived on every
 read and never stored: `awaiting-review` for development work reported done with no review

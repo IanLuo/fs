@@ -1,6 +1,8 @@
 package coord_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,6 +196,105 @@ func TestDoneComparesTheReviewersTree(t *testing.T) {
 	if seen[dev.Tid] != "dev-done" || seen[review.Tid] != "pass" {
 		t.Fatalf("status digests = %v, want the dev-done and the pass naming %s", seen, fixtureDigest)
 	}
+}
+
+// TestDoneRefusesTheDevelopersCheckout is P1-2's acceptance test: the gate records
+// the directory the reviewer signed from, refuses a signature made in the
+// developer's own checkout, and compares resolved directories rather than
+// spellings.
+func TestDoneRefusesTheDevelopersCheckout(t *testing.T) {
+	s, _ := open(t)
+	checkout := t.TempDir()   // where the developer worked
+	reviewTree := t.TempDir() // the reviewer's own directory
+	dev, err := coord.Add(s, coord.AddInput{
+		Project: "p", Goal: "work", Checks: []string{"go test ./..."}, Path: checkout,
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
+	claim(t, s, "p", "s-rev", review.Tid)
+	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+
+	// Signing from the developer's checkout is one context twice: refused, with both
+	// directories named, and nothing closed. Every check passed, so the refusal is
+	// about where the signature was made and nothing else.
+	_, err = coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: checkout})
+	if err == nil {
+		t.Fatal("completion passed from the developer's checkout")
+	}
+	for _, want := range []string{checkout, dev.ProjectPath, dev.Tid, "not independent"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+	assertOpen(t, s, dev.Tid)
+	assertOpen(t, s, review.Tid)
+
+	// An alias of that directory is that directory: the comparison is resolved, so a
+	// second spelling cannot sign what the first one may not.
+	alias := filepath.Join(t.TempDir(), "checkout-alias")
+	if err := os.Symlink(checkout, alias); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	_, err = coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: alias})
+	if err == nil {
+		t.Fatal("a symlinked spelling of the developer's checkout was accepted")
+	}
+	if !strings.Contains(err.Error(), alias) || !strings.Contains(err.Error(), checkout) {
+		t.Fatalf("refusal %q does not name both spellings %q and %q", err, alias, checkout)
+	}
+
+	// A signature from the reviewer's own tree closes the round, and the record says
+	// where it was made; `fs status` reads it off the closed round.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: reviewTree}); err != nil {
+		t.Fatalf("a signature from the review worktree did not close the round: %v", err)
+	}
+	ev := newestEvidence(t, s, "p", review.Tid)
+	if ev.State != "closed" || ev.Role != "review" || ev.Session != "s-rev" {
+		t.Fatalf("newest evidence = %+v, want the review's close", ev)
+	}
+	if !strings.Contains(ev.Note, reviewTree) {
+		t.Fatalf("close note = %q, want the signing directory %q", ev.Note, reviewTree)
+	}
+	if ev.Digest != fixtureDigest {
+		t.Fatalf("close digest = %q, want the tree it blessed %q", ev.Digest, fixtureDigest)
+	}
+
+	// A development row with no recorded path is a round from before paths were
+	// recorded. There is no fact to compare, so a signature is not refused on one
+	// that was never written down.
+	old := add(t, s, "p")
+	oldReview := addReview(t, s, "p", old.Tid)
+	claim(t, s, "p", "s-dev2", old.Tid)
+	devDone(t, s, "p", "s-dev2", old.Tid)
+	claim(t, s, "p", "s-rev2", oldReview.Tid)
+	runCheck(t, s, "p", "s-rev2", oldReview.Tid, old.Checks[0], 0)
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev2", Task: oldReview.Tid, Dir: reviewTree}); err != nil {
+		t.Fatalf("a round with no recorded developer path refused a signature: %v", err)
+	}
+}
+
+// newestEvidence is one task's newest report, as status shows it.
+func newestEvidence(t *testing.T, s *memory.Store, project, tid string) coord.Evidence {
+	t.Helper()
+	st, err := coord.Status(s, coord.StatusInput{Project: project})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, task := range st.Projects[0].Tasks {
+		if task.Task != tid {
+			continue
+		}
+		if len(task.Evidence) == 0 {
+			t.Fatalf("task %s carries no evidence", tid)
+		}
+		return task.Evidence[0]
+	}
+	t.Fatalf("no task %s in status", tid)
+	return coord.Evidence{}
 }
 
 // TestDoneRefusesWithoutReviewerRunChecks is the "missing required check" case: the
