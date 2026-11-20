@@ -40,6 +40,12 @@ directory, naming the task and the path.
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`, `refused`. `refused` is
 written by `fs done` when the gate declines to close; it is not a reviewer verdict.
 
+A round has two gated handovers below `claim`. `dev-done` is refused until the review
+task exists and carries the tree the developer finished (`--digest <commit>`);
+`fs add --review-of` is refused while one open review of that task has no verdict yet.
+`fs done` then compares the developer's digest with the one the reviewer's passing run
+names, and closes nothing when they differ.
+
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
 ## Workflow
@@ -47,18 +53,18 @@ The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 A development task and its review are two tasks, worked by two sessions.
 
 ```text
-USER                     DEV AGENT (session s-dev)          REVIEW AGENT (session s-rev)
-────                     ─────────────────────────           ────────────────────────────
+USER                     DEV AGENT (session s-dev)            REVIEW AGENT (session s-rev)
+────                     ─────────────────────────             ────────────────────────────
 fs add  ──► t-dev
          claim s-dev ───► holds t-dev, round 1
-                          report progress ──┐
-                          report dev-done ──┴─► (not complete)
-                                                    fs add --review-of t-dev ──► t-rev
-                                                                                 claim s-rev
-                                                                                 runs each declared check
-                                                                                 report pass+exit ──► fs done
-                                                                                                       │
-                                                                                 t-rev closed, then t-dev ┘
+                          report progress
+                          fs add --review-of t-dev ──────────► t-rev
+                          report dev-done --digest <commit> ──► (not complete)
+                                                                claim s-rev
+                                                                runs each declared check
+                                                                report pass+exit+--digest ──► fs done
+                                                                                              │
+                                                                t-rev closed, then t-dev ─────┘
 
 anyone: fs status  (read-only; a session sees only its binding, the user sees every project)
 ```
@@ -67,11 +73,12 @@ anyone: fs status  (read-only; a session sees only its binding, the user sees ev
 fs add    --project demo --goal "ship X" --check "go test ./..."   # → t-dev
 fs claim  --project demo --session s-dev --task t-dev              # binds + holds
 fs report --project demo --session s-dev --task t-dev --state progress --note "half done"
-fs report --project demo --session s-dev --task t-dev --state dev-done
 fs add    --project demo --goal "review t-dev" --review-of t-dev   # → t-rev, checks inherited
+fs report --project demo --session s-dev --task t-dev --state dev-done \
+          --digest "$(git rev-parse HEAD)" --note "parser wired"     # refused without --digest
 fs claim  --project demo --session s-rev --task t-rev
 fs report --project demo --session s-rev --task t-rev --state pass --role review \
-          --command "go test ./..." --exit 0
+          --command "go test ./..." --exit 0 --digest "$(git rev-parse HEAD)"
 fs done   --project demo --session s-rev --task t-rev              # closes t-rev, then t-dev
 fs status --project demo            # user view;  --session s-dev gives the agent's own view
 ```
@@ -89,10 +96,10 @@ What each verb writes:
 
 | verb | rows written | notes |
 |---|---|---|
-| `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write |
+| `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write; a review is refused while one open review of the same task has no verdict |
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
-| `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; this write is also the keepalive |
-| `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why |
+| `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
+| `done` | no new row when it passes: closes the review row, then the development row | a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's |
 | `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
@@ -131,7 +138,8 @@ the no-retry rule is about a broken launcher, not an agent that never woke. Use
 The agent gets a prompt that names the store (`MEMSTORE_DB`), the session id to
 claim as, and every declared check — because a new pane inherits the launcher's
 environment, not the caller's. A reviewer is told to run the checks and report the
-real exit codes; a developer is told to create its review and dispatch it.
+real exit codes; a developer is told to create its review task before the `dev-done`,
+carry the commit in `--digest`, and dispatch the review afterwards.
 
 `fs path --project P --path DIR` is how a project moves. The binding is appended to the
 project's own scope and the newest one wins, so dispatch follows it without a task row
@@ -175,13 +183,26 @@ done on a development task                  → refused: a worker cannot complet
 same session as the developer               → refused: a reviewer must be a different session
 the development task was never claimed      → refused: there is no developer to be independent from
 reviewed task already closed                → refused: a completed task is never reopened
+no dev-done digest on the development task  → refused: the verdict must name the tree it judged
 no review-role run of a declared check      → refused, and a `refused` event records why
 newest run of a check exits non-zero        → refused, naming the check and its exit
+the newest passing run names another tree   → refused, naming both digests
 all checks pass, run by this reviewer       → closes the review, then the development task
 ```
 
 The gate matches the newest `role=review` event from this session with the exact declared
 command, so a reviewer that fixed and re-ran reports the rerun.
+
+A verdict names the tree it judged. The developer's newest `dev-done` carries the commit it
+finished; the reviewer's newest `pass` carries the commit it ran against. fs compares the
+two exactly as recorded — `abc123` is not `abc1234`, because guessing which one was meant is
+how a gate stops saying what it checked — and refuses `done` when they differ, naming both.
+
+`round_state` in the JSON is where the round stands between its steps, derived on every
+read and never stored: `awaiting-review` for development work reported done with no review
+task (a row written before the refusal — append-only records are not rewritten), and
+`review-open` for a review task with no verdict yet. It is a new field rather than a new
+`state` value, so a task a dispatcher sees as `open` stays actable.
 
 A refusal is recorded as `state: refused`, not `fail`: the gate declined to close, which
 is not a reviewer's verdict that a check failed. The review stays open, reap does not treat
@@ -211,9 +232,9 @@ $ fs status --format table
 2 projects, 3 tasks · 2 open · 1 claimed
 
 demo  /Users/me/src/demo
-  TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      PROCESS  GOAL
-  t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   working  add lease-expiry tests
-  t-f64fa63ac1ddac3e  dev     open     -                 -      -         unknown    -        a goal long enough to be cut off…
+  TASK                KIND    STATE    HOLDER            ROUND  LEASE     AGENT      PROCESS  WAITING          GOAL
+  t-0a7b9b637a41a3c6  dev     claimed  s-1               1      1m44s     progress   working  -                add lease-expiry tests
+  t-f64fa63ac1ddac3e  dev     open     -                 -      -         dev-done~  -        awaiting-review  ship the parser
 
 3 projects with no tasks: 3d-house, ann, cap
 ```
@@ -236,6 +257,11 @@ demo  /Users/me/src/demo
   one warning line under the table; the rows still answer. Read it beside `LEASE`: a lapsed
   lease with a `working` process is a silent agent, not a dead one. The JSON carries it as
   `process.status` with `process.pane`, `process.name` and `process.launched`.
+- `WAITING` is `round_state`: `awaiting-review` means the development work is reported done
+  and no review task exists, so the round is stalled until someone adds one; `review-open`
+  means a review task exists with no verdict yet. `-` means the round is not between those
+  two steps. It is derived from rows on every read, never stored, and it is a separate field
+  from `STATE` so a task a dispatcher sees as `open` stays actable.
 - Projects with no tasks are folded into one line: a scope keeps its name for as long as it
   holds any `fs:` row, so empty projects say nothing about current work. The JSON view still
   carries every project, including `"tasks": []`.
