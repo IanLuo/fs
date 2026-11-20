@@ -168,12 +168,16 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 		return DoneResult{}, errors.New(reason)
 	}
 
-	// A passing review is the one step that used to leave no row of its own. Record
-	// it before the rows are closed: a failure between the two is recoverable — the
-	// retry closes and records again — where closing first would leave a closed
+	// A passing review is the one step that used to leave no row of its own, so a
+	// round's duration and a review's latency were unmeasurable from the records: the
+	// task row closed and nothing said when. Record the close on every task it closes,
+	// before the rows are closed — a failure between the two is recoverable, because
+	// the retry closes and records again, where closing first would leave a closed
 	// round that no retry could ever record.
-	if err := writeClose(s, scope, ix, review.Tid, in.Session, in.Dir, devDigest); err != nil {
-		return DoneResult{}, err
+	for _, tid := range []string{review.Tid, dev.Tid} {
+		if err := writeClose(s, scope, ix, tid, in.Session, in.Dir, devDigest); err != nil {
+			return DoneResult{}, err
+		}
 	}
 
 	// Passing. Close the review first, then the development task it reviewed. That
@@ -192,8 +196,9 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 
 // writeClose records one close: the round ended, in this session, from this
 // directory, at the tree the signature blessed. It is one append-only row of the
-// ordinary report shape, so a later reader can measure a round — claim to close,
-// dev-done to close — without a chat log and without a second store.
+// ordinary report shape, one per closed task, so a later reader can measure a round
+// — claim to close, dev-done to close — without a chat log and without a second
+// store.
 func writeClose(s *memory.Store, scope string, ix *memory.Index, tid, sid, dir, digest string) error {
 	note, text := "", "closed"
 	if dir != "" {

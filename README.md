@@ -39,6 +39,7 @@ directory, naming the task and the path.
 
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`, `refused`. `refused` is
 written by `fs done` when the gate declines to close; it is not a reviewer verdict.
+`closed` is written by `fs done` on success and is never a state `fs report` accepts.
 
 A round has two gated handovers below `claim`. `dev-done` is refused until the review
 task exists and carries the tree the developer finished (`--digest <commit>`);
@@ -47,7 +48,8 @@ task exists and carries the tree the developer finished (`--digest <commit>`);
 names, and closes nothing when they differ. It also compares its own working directory
 with the development task's recorded path, and closes nothing when they are one directory:
 the reviewer signs from its own tree, and the close records the directory it was signed
-from.
+from. That close is one `fs.event` per closed task, written when the round ends, so the
+records can answer how long a round took and how long the review took.
 
 The store is `$MEMSTORE_DB`, else `~/.memstore/memory.db`.
 
@@ -102,7 +104,7 @@ What each verb writes:
 | `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write; a review is refused while one open review of the same task has no verdict |
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
-| `done` | one `fs.event` on the review, then closes the review row, then the development row | the row carries `closed`, the tree it blessed and the directory the reviewer signed from; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout |
+| `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout |
 | `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
@@ -191,7 +193,7 @@ no dev-done digest on the development task  → refused: the verdict must name t
 no review-role run of a declared check      → refused, and a `refused` event records why
 newest run of a check exits non-zero        → refused, naming the check and its exit
 the newest passing run names another tree   → refused, naming both digests
-all checks pass, run by this reviewer       → records the close, then closes the review and the development task
+all checks pass, run by this reviewer       → records one close per closed task, then closes the review and the development task
 ```
 
 The gate matches the newest `role=review` event from this session with the exact declared
@@ -215,6 +217,13 @@ task (a row written before the refusal — append-only records are not rewritten
 A refusal is recorded as `state: refused`, not `fail`: the gate declined to close, which
 is not a reviewer's verdict that a check failed. The review stays open, reap does not treat
 the refusal as a verdict, and a later passing run plus `fs done` still closes it as pass.
+
+A close is recorded as `state: closed`, one row on each task the gate closed, written
+before the rows are closed so a failure between the two is recoverable. It carries the
+reviewer's session, the tree it blessed and the directory it signed from, and it is not an
+agent state: the derivation that feeds `agent` and `runtime` skips it, so those cells keep
+their vocabulary while the close stays in `evidence`. `closed` is not a state `fs report`
+accepts — a caller that could report a close could close a round without passing the gate.
 
 fs has no repair or migration path and does not rewrite shared rows. A `fail` row written
 before the `refused` state existed, whose note begins `completion refused`, keeps that

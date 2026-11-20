@@ -82,7 +82,8 @@ var helpBlocks = []struct{ name, block string }{
 
 // usageNotes hold for every verb, so they close the full usage instead of
 // repeating inside each verb's own help.
-const usageNotes = `States: progress, dev-done, pass, fail, blocked, refused.
+const usageNotes = `States report accepts: progress, dev-done, pass, fail, blocked, refused.
+Closed is written by fs done on success, never by report.
 The store is $MEMSTORE_DB, else ~/.memstore/memory.db. fs owns no store of its own.
 `
 

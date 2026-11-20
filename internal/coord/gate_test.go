@@ -1,10 +1,12 @@
 package coord_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/coord"
 	"github.com/flagship-dev/flagship/internal/memory"
@@ -185,15 +187,15 @@ func TestDoneComparesTheReviewersTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]string{}
+	seen := map[string]bool{}
 	for _, task := range st.Projects[0].Tasks {
 		for _, ev := range task.Evidence {
 			if ev.Digest == fixtureDigest {
-				seen[task.Task] = ev.State
+				seen[task.Task+" "+ev.State] = true
 			}
 		}
 	}
-	if seen[dev.Tid] != "dev-done" || seen[review.Tid] != "pass" {
+	if !seen[dev.Tid+" dev-done"] || !seen[review.Tid+" pass"] {
 		t.Fatalf("status digests = %v, want the dev-done and the pass naming %s", seen, fixtureDigest)
 	}
 }
@@ -275,6 +277,114 @@ func TestDoneRefusesTheDevelopersCheckout(t *testing.T) {
 	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev2", Task: oldReview.Tid, Dir: reviewTree}); err != nil {
 		t.Fatalf("a round with no recorded developer path refused a signature: %v", err)
 	}
+}
+
+// TestCloseIsRecordedForEveryClosedTask is P2's acceptance test: a close used to
+// leave no row, so a round's duration and a review's latency could not be measured
+// from the records. Each closed task now carries one close, after its own steps, so
+// claim to close and dev-done to close are computable from rows alone.
+func TestCloseIsRecordedForEveryClosedTask(t *testing.T) {
+	s, now := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	*now = now.Add(30 * time.Second)
+	devDone(t, s, "p", "s-dev", dev.Tid)
+	handover := *now
+	*now = now.Add(30 * time.Second)
+	claim(t, s, "p", "s-rev", review.Tid)
+	reviewClaimed := *now
+	*now = now.Add(60 * time.Second)
+	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+
+	// A caller cannot report a close: it is the gate's word, not a report state.
+	_, err := coord.Report(s, coord.ReportInput{Project: "p", Session: "s-rev", Task: review.Tid, State: "closed"})
+	if err == nil {
+		t.Fatal("a caller reported state closed")
+	}
+
+	*now = now.Add(60 * time.Second)
+	signedAt := *now
+	signedFrom := t.TempDir()
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid, Dir: signedFrom}); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+
+	for _, tid := range []string{review.Tid, dev.Tid} {
+		var closes []map[string]any
+		for _, ev := range eventRows(t, s, "p", tid) {
+			if ev["state"] == "closed" {
+				closes = append(closes, ev)
+			}
+		}
+		if len(closes) != 1 {
+			t.Fatalf("task %s carries %d close rows, want exactly one: %v", tid, len(closes), closes)
+		}
+		closed := closes[0]
+		if closed["role"] != "review" || closed["session"] != "s-rev" || closed["digest"] != fixtureDigest {
+			t.Fatalf("close on %s = %v, want the reviewer's session and the blessed tree", tid, closed)
+		}
+		at, ok := closed["at"].(time.Time)
+		if !ok || !at.Equal(signedAt) {
+			t.Fatalf("close on %s at %v, want %s", tid, closed["at"], signedAt)
+		}
+		// The two numbers the round is defended with, from rows alone.
+		if !at.After(handover) {
+			t.Fatalf("close on %s at %s is not after its dev-done at %s", tid, at, handover)
+		}
+		if !at.After(reviewClaimed) {
+			t.Fatalf("close on %s at %s is not after the review claim at %s", tid, at, reviewClaimed)
+		}
+		note, _ := closed["note"].(string)
+		if !strings.Contains(note, signedFrom) {
+			t.Fatalf("close note on %s = %q, want where the signature was made", tid, note)
+		}
+	}
+
+	// Status stays additive: the close is in the evidence, and the cells a reader acts
+	// on keep their own vocabulary — a close is not an agent state.
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := map[string]coord.TaskStatus{}
+	for _, task := range st.Projects[0].Tasks {
+		tasks[task.Task] = task
+	}
+	if got := tasks[review.Tid].Agent.State; got != "pass" {
+		t.Fatalf("review agent state = %q, want the verdict the close rests on", got)
+	}
+	if got := tasks[dev.Tid].Agent.Reported; got != "dev-done" {
+		t.Fatalf("development agent reads %q, want the dev-done the close followed", got)
+	}
+	var verdict bool
+	for _, ev := range tasks[review.Tid].Evidence {
+		if ev.State == "pass" && ev.Command == dev.Checks[0] {
+			verdict = true
+		}
+	}
+	if !verdict {
+		t.Fatalf("evidence = %+v, want the passing run still there", tasks[review.Tid].Evidence)
+	}
+}
+
+// eventRows is one task's report rows with their extras decoded, oldest first: what
+// a reader measuring a round works from, without going through status.
+func eventRows(t *testing.T, s *memory.Store, project, tid string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, r := range rows(t, s, project) {
+		if r.Kind != memory.KindEvent || r.Task() != tid {
+			continue
+		}
+		var ex map[string]any
+		if err := json.Unmarshal([]byte(r.Extra), &ex); err != nil {
+			t.Fatalf("task %s: unreadable event %d: %v", tid, r.ID, err)
+		}
+		ex["at"], ex["session"] = r.Ts, r.Session()
+		out = append(out, ex)
+	}
+	return out
 }
 
 // newestEvidence is one task's newest report, as status shows it.
