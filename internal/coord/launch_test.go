@@ -289,8 +289,8 @@ func TestDispatchRefusesAReviewInTheDeveloperCheckout(t *testing.T) {
 	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: dev.Tid, Dir: checkout}, devLaunch); err != nil {
 		t.Fatalf("dispatch of the development task: %v", err)
 	}
-	if !strings.Contains(devLaunch.started[0].Prompt, "worktree of its own") {
-		t.Errorf("the developer's prompt does not say where to dispatch the review:\n%s", devLaunch.started[0].Prompt)
+	if !strings.Contains(devLaunch.started[0].Prompt, "fs dispatch --project p --task <the review task id> --worktree") {
+		t.Errorf("the developer's prompt does not say to dispatch the review with --worktree:\n%s", devLaunch.started[0].Prompt)
 	}
 
 	// A development row from before paths were recorded: there is no fact to compare.

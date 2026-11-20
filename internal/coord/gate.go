@@ -175,7 +175,14 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	// before the rows are closed — a failure between the two is recoverable, because
 	// the retry closes and records again, where closing first would leave a closed
 	// round that no retry could ever record.
-	facts := closeFacts{Session: in.Session, Dir: in.Dir, Digest: devDigest}
+	// The review may have run in a checkout fs made for it. fs removes only what it
+	// made, and only while it is clean: a dirty worktree holds someone's work, so it
+	// stays on disk and the close names it. There is no --force anywhere — deleting
+	// a directory with uncommitted work is not a cleanup. This happens before the
+	// close is written, so the note can say what was left. Every refusal above
+	// happens before it, so a refused round keeps its checkout to continue in.
+	worktreeNote := settleWorktree(rows, dev, review, in.Session)
+	facts := closeFacts{Session: in.Session, Dir: in.Dir, Digest: devDigest, Worktree: worktreeNote}
 	for _, tid := range []string{review.Tid, dev.Tid} {
 		if err := writeClose(s, scope, ix, tid, facts); err != nil {
 			return DoneResult{}, err
@@ -197,20 +204,47 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 }
 
 // closeFacts is everything one close records about the round it ends: who signed,
-// from where, and at which tree.
+// from where, at which tree, and what became of the checkout fs made.
 type closeFacts struct {
-	Session string
-	Dir     string
-	Digest  string
+	Session  string
+	Dir      string
+	Digest   string
+	Worktree string
 }
 
-// note is the close's one line: where the signature was made.
+// note is the close's one line: where the signature was made, and the checkout fs
+// left behind when it did not remove one.
 func (f closeFacts) note() string {
 	var parts []string
 	if f.Dir != "" {
 		parts = append(parts, "signed from "+f.Dir)
 	}
+	if f.Worktree != "" {
+		parts = append(parts, f.Worktree)
+	}
 	return strings.Join(parts, "; ")
+}
+
+// settleWorktree deals with the review checkout fs made, and answers what the
+// close should say about it: nothing when fs made none or removed it, and the
+// reason it stayed when it did. A directory fs cannot read is left for the same
+// reason a dirty one is — fs would be deleting on a guess.
+func settleWorktree(rows []memory.Row, dev, review Task, sid string) string {
+	wt, ok := launchedWorktree(rows, review.Tid, sid)
+	if !ok || !exists(wt.Dir) {
+		return ""
+	}
+	clean, err := worktreeClean(wt.Dir)
+	if err != nil {
+		return fmt.Sprintf("checkout %s left in place: %v", wt.Dir, err)
+	}
+	if !clean {
+		return fmt.Sprintf("checkout %s kept: it has uncommitted work", wt.Dir)
+	}
+	if err := removeWorktree(dev.ProjectPath, wt.Dir); err != nil {
+		return fmt.Sprintf("checkout %s left in place: %v", wt.Dir, err)
+	}
+	return ""
 }
 
 // writeClose records one close: the round ended, in this session, from this

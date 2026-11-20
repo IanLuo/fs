@@ -22,7 +22,7 @@ fs report --project P --session S --task TID --state S [--role dev|review|runtim
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
 fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
-            [--wait-seconds N] [--no-wait]
+            [--worktree] [--wait-seconds N] [--no-wait]
 fs path   --project P --path DIR
 fs reap   [--project P]
 fs status [--project P] [--session S] [--format json|table]
@@ -111,8 +111,8 @@ What each verb writes:
 | `add` | `fs.task` (`task:<tid>`) | no goal, no scope or no check is refused before any write; a review is refused while one open review of the same task has no verdict |
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
-| `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout |
-| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there, a review started in the developer's checkout and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
+| `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout; removes a review checkout `fs` made, only while it is clean, and names one it kept |
+| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there, a review started in the developer's checkout, `--worktree` on a task that is not a review of a named tree, and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
 | `status` | nothing | derived from rows on every call |
@@ -151,7 +151,7 @@ The agent gets a prompt that names the store (`MEMSTORE_DB`), the session id to
 claim as, and every declared check — because a new pane inherits the launcher's
 environment, not the caller's. A reviewer is told to run the checks and report the
 real exit codes; a developer is told to create its review task before the `dev-done`,
-carry the commit in `--digest`, and dispatch the review afterwards.
+carry the commit in `--digest`, and start the review with `--worktree` afterwards.
 
 `fs path --project P --path DIR` is how a project moves. The binding is appended to the
 project's own scope and the newest one wins, so dispatch follows it without a task row
@@ -188,13 +188,19 @@ The winner is decided by memstore refusing a duplicate key, never by a compariso
 makes. The order is bind, then claim: a failure after step 1 burns the session and holds
 nothing, which is safe — the fix is a new session, not a retry.
 
-A review task is dispatched into a checkout of its own. `--dir` is compared with the
-development task's recorded path, both resolved through symlinks, and one directory is
-refused before an agent exists — naming both directories and `git worktree add <dir>
-<commit>`. The gate asks the same question again at the signature, so asking here spends a
-dispatch instead of a finished review. A development task's own dispatch is unchanged, a
-development row with no recorded path refuses nothing, and the developer's prompt says to
-create the worktree at the commit under review.
+A review task is dispatched into a checkout of its own. `fs dispatch --worktree` makes that
+checkout: fs reads the developer's newest `dev-done` digest and recorded path, runs `git
+worktree add` at a sibling of the repository (`<repo>-review-<short digest>`, or the `--dir`
+you name), records `worktree: true` on the launch row and starts the reviewer there — so the
+reviewer is independent by construction instead of by instruction. It is a refusal on a
+development task, on a round whose developer recorded no `dev-done` digest, and on one with
+no recorded path. `fs done` removes that checkout only when fs made it and `git status
+--porcelain` is empty; a dirty one stays on disk and the close note names it, and a refused
+round keeps its checkout to continue in. There is no `--force` anywhere. Without
+`--worktree`, `--dir` is still compared with the development task's recorded path, both
+resolved through symlinks, and one directory is refused before an agent exists: the gate
+asks the same question again at the signature, so asking here spends a dispatch instead of a
+finished review.
 
 ### The completion gate
 

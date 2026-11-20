@@ -54,13 +54,19 @@ var helpBlocks = []struct{ name, block string }{
                                      is run from is recorded and may not be the
                                      developer's checkout.`},
 	{"dispatch", `  fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
-              [--wait-seconds N] [--no-wait] [--caller-pane PANE]
+              [--worktree] [--wait-seconds N] [--no-wait] [--caller-pane PANE]
                                      Start one agent for one task. fs chooses the
                                      session id and waits for that session to
                                      claim the task or report. A launcher that
                                      fails is a refusal, and so is an agent that
                                      never takes the prompt. --no-wait returns at
                                      once and marks the launch unconfirmed.
+                                     --worktree is for a review task: fs reads
+                                     the developer's dev-done digest and makes
+                                     the reviewer's checkout with git worktree
+                                     add, then starts it there. fs removes that
+                                     checkout at a close only while it is clean;
+                                     a dirty one stays and the close names it.
                                      --caller-pane names the pane that asked, so
                                      the finished round can be addressed to it;
                                      it defaults to $HERDR_PANE_ID and is empty
@@ -307,6 +313,7 @@ func dispatchCmd(args []string) (any, error) {
 	waitSeconds := fs.Int("wait-seconds", int(coord.DefaultDispatchWait/time.Second),
 		"how long to wait for the agent to claim the task or report")
 	noWait := fs.Bool("no-wait", false, "return at once and mark the launch unconfirmed")
+	worktree := fs.Bool("worktree", false, "on a review task, make the reviewer's checkout at the developer's digest and start it there")
 	callerFlag := fs.String("caller-pane", "", "the pane that asked for this launch; defaults to $HERDR_PANE_ID")
 	if err := parse(fs, args); err != nil {
 		return nil, err
@@ -335,7 +342,8 @@ func dispatchCmd(args []string) (any, error) {
 	return coord.Dispatch(s, coord.DispatchInput{
 		Project: *project, Task: *task, Kind: *kind, Dir: *dir,
 		Wait: time.Duration(*waitSeconds) * time.Second, NoWait: *noWait,
-		Caller: caller,
+		Worktree: *worktree,
+		Caller:   caller,
 	}, launcher)
 }
 

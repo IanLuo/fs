@@ -80,6 +80,12 @@ type DispatchInput struct {
 	// unconfirmed because nothing was seen.
 	NoWait bool
 
+	// Worktree asks fs to make the review's own checkout: the developer's newest
+	// dev-done digest, checked out in a sibling directory, so the reviewer starts
+	// independent by construction instead of by instruction. It is a refusal on
+	// anything but a review task.
+	Worktree bool
+
 	// Caller is the pane that asked for the work, when one was named. It is
 	// carried, never guessed: empty means the caller is unknown, not that the
 	// dispatcher is the caller. cap addresses the round's end to this pane.
@@ -188,12 +194,22 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 			}
 		}
 	}
-	dir, err := resolveDir(in.Dir, rows, task, in.Project)
-	if err != nil {
-		return DispatchResult{}, err
-	}
-	if err := refuseReviewInDevCheckout(rows, task, dir); err != nil {
-		return DispatchResult{}, err
+	var dir, repo string
+	created := false
+	if in.Worktree {
+		dir, repo, err = mintReviewWorktree(rows, ix, now, task, in.Dir)
+		if err != nil {
+			return DispatchResult{}, err
+		}
+		created = true
+	} else {
+		dir, err = resolveDir(in.Dir, rows, task, in.Project)
+		if err != nil {
+			return DispatchResult{}, err
+		}
+		if err := refuseReviewInDevCheckout(rows, task, dir); err != nil {
+			return DispatchResult{}, err
+		}
 	}
 
 	sid := dispatchSession(task.Tid, now)
@@ -202,6 +218,11 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 
 	handle, err := l.Start(LaunchSpec{Name: name, Kind: in.Kind, Dir: dir, Prompt: prompt})
 	if err != nil {
+		if created {
+			// Nothing ever ran in the directory fs just made, and a refusal must not
+			// leave the litter this round exists to remove.
+			_ = removeWorktree(repo, dir)
+		}
 		return DispatchResult{}, fmt.Errorf("launcher refused to start %s: %w", task.Tid, err)
 	}
 
@@ -228,7 +249,7 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	extra, err := json.Marshal(launchExtra{
 		Task: task.Tid, Session: sid, Kind: in.Kind, Role: task.Kind,
 		Pane: handle.Pane, Name: handle.Name, Dir: dir, At: now.UTC(), Outcome: outcome,
-		CallerPane: in.Caller,
+		CallerPane: in.Caller, Worktree: created,
 	})
 	if err != nil {
 		return DispatchResult{}, err
@@ -388,8 +409,8 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 	b.WriteString("6. When the work is complete: fs report --project " + project + " --session " + sid + " --task " + task.Tid +
 		" --state dev-done --digest '<commit>' --note '<what you changed>'. This does not complete the task, and it is refused without a --digest naming the commit you finished.\n\n")
 	b.WriteString("7. Then start the review, which is how your task can close: fs dispatch --project " + project +
-		" --task <the review task id>. You do not review your own work: the reviewer is a fresh session that runs the same checks.\n")
-	b.WriteString("   Dispatch it into a worktree of its own, created at the commit under review: git worktree add /tmp/fs-review-<commit> <commit>, then pass --dir /tmp/fs-review-<commit>. A review dispatched into your own checkout is refused.\n")
+		" --task <the review task id> --worktree. You do not review your own work: the reviewer is a fresh session that runs the same checks.\n")
+	b.WriteString("   --worktree makes the reviewer's checkout at the commit you reported dev-done with and starts it there. A review dispatched into your own checkout is refused.\n")
 	return b.String()
 }
 
@@ -425,6 +446,9 @@ type launchExtra struct {
 	// CallerPane is the pane that asked for the launch. Empty when no caller was
 	// named: fs never invents one.
 	CallerPane string `json:"caller_pane,omitempty"`
+	// Worktree is true when fs made the directory itself with `git worktree add`.
+	// fs removes only what it made, and only while it is clean.
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 // LaunchRecord is one agent fs started.
