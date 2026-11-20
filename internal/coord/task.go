@@ -112,6 +112,18 @@ func Add(s *memory.Store, in AddInput) (Task, error) {
 		if parent.done {
 			return Task{}, fmt.Errorf("%s is closed; re-work is a new task", parent.Tid)
 		}
+		// One open review without a verdict per development task. Review effort is
+		// the expensive part of a round, and two open reviews are two equally valid
+		// dispatch targets for one verdict: the second reviewer's completion is then
+		// refused for holding the wrong task. A review that has recorded a verdict
+		// has done its job, so the next round may have its own.
+		ix, now := memory.NewIndex(rows), s.Now()
+		for _, t := range allTasks(rows) {
+			if t.ParentDev != parent.Tid || t.done || hasVerdict(ix, t.Tid, now) {
+				continue
+			}
+			return Task{}, fmt.Errorf("%s already has an open review, %s, with no verdict yet: one round has one review — wait for its verdict, or review the work again in a new task once it has one", parent.Tid, t.Tid)
+		}
 	}
 
 	path, err := cleanPath(in.Path)

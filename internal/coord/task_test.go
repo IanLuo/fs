@@ -125,6 +125,39 @@ func TestReviewTaskRunsTheDeclaredChecks(t *testing.T) {
 	}
 }
 
+// TestAddRefusesASecondOpenReview is P0-2's acceptance test: two open reviews of
+// one development task are two dispatch targets for one verdict. The second add is
+// refused and names the open review; once that review records a verdict, a new one
+// is accepted.
+func TestAddRefusesASecondOpenReview(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+
+	_, err := coord.Add(s, coord.AddInput{Project: "p", Goal: "review " + dev.Tid, ReviewOf: dev.Tid})
+	if err == nil {
+		t.Fatal("a second open review was added for one development task")
+	}
+	for _, want := range []string{dev.Tid, review.Tid, "no verdict"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+
+	// A reviewer's verdict ends the wait: the first review has done its job, and a
+	// re-review after a fail may have its own task.
+	claim(t, s, "p", "s-rev", review.Tid)
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-rev", Task: review.Tid, Role: "review",
+		State: "fail", Note: "the parser misses empty input"})
+	again, err := coord.Add(s, coord.AddInput{Project: "p", Goal: "review " + dev.Tid, ReviewOf: dev.Tid})
+	if err != nil {
+		t.Fatalf("a review after a verdict was refused: %v", err)
+	}
+	if again.ParentDev != dev.Tid || again.Kind != coord.KindReview {
+		t.Fatalf("review = %+v, want a review of %s", again, dev.Tid)
+	}
+}
+
 // TestAddRefusesAReviewOfClosedWork: a completed task is never reopened, so new
 // work is a new task even when the same goal comes round again.
 func TestAddRefusesAReviewOfClosedWork(t *testing.T) {
