@@ -238,6 +238,69 @@ func TestDispatchAsksAReviewerForChecks(t *testing.T) {
 	}
 }
 
+// TestDispatchRefusesAReviewInTheDeveloperCheckout: the separate checkout is a fact
+// of the dispatch call, so fs asks it there — before an agent exists, where the
+// refusal costs a dispatch instead of a finished review the gate then will not
+// close. The message names both paths and the command that makes a worktree. A
+// checkout of its own starts the review, a development task's own dispatch is
+// unchanged, and a development row with no recorded path refuses nothing.
+func TestDispatchRefusesAReviewInTheDeveloperCheckout(t *testing.T) {
+	s, _ := open(t)
+	checkout := t.TempDir()
+	dev, err := coord.Add(s, coord.AddInput{Project: "p", Goal: "g", Checks: []string{"true"}, Path: checkout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := addReview(t, s, "p", dev.Tid)
+	fake := &fakeLauncher{}
+
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: checkout}, fake); err == nil {
+		t.Fatal("dispatched a review into the developer's checkout")
+	} else {
+		for _, want := range []string{checkout, dev.Tid, "git worktree add"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal = %v, want %q named", err, want)
+			}
+		}
+	}
+	if len(fake.started) != 0 {
+		t.Errorf("started %d agents for a refused dispatch, want 0", len(fake.started))
+	}
+	if len(launchRows(t, s, "p")) != 0 {
+		t.Error("a refused dispatch wrote a launch record")
+	}
+
+	// A worktree of its own is where the review belongs: it starts, and the launch
+	// record names the directory it was started in.
+	worktree := t.TempDir()
+	started, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: review.Tid, Dir: worktree}, fake)
+	if err != nil {
+		t.Fatalf("dispatch into a worktree: %v", err)
+	}
+	if started.Dir != worktree {
+		t.Errorf("launch dir = %q, want %q", started.Dir, worktree)
+	}
+	if len(launchRows(t, s, "p")) != 1 {
+		t.Errorf("launch records = %d, want 1", len(launchRows(t, s, "p")))
+	}
+
+	// The developer's own dispatch is unchanged: it works where the work is.
+	devLaunch := &fakeLauncher{}
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "p", Task: dev.Tid, Dir: checkout}, devLaunch); err != nil {
+		t.Fatalf("dispatch of the development task: %v", err)
+	}
+	if !strings.Contains(devLaunch.started[0].Prompt, "worktree of its own") {
+		t.Errorf("the developer's prompt does not say where to dispatch the review:\n%s", devLaunch.started[0].Prompt)
+	}
+
+	// A development row from before paths were recorded: there is no fact to compare.
+	bare := add(t, s, "q")
+	bareReview := addReview(t, s, "q", bare.Tid)
+	if _, err := coord.Dispatch(s, coord.DispatchInput{NoWait: true, Project: "q", Task: bareReview.Tid, Dir: t.TempDir()}, &fakeLauncher{}); err != nil {
+		t.Fatalf("a review of a development task with no recorded path was refused: %v", err)
+	}
+}
+
 // TestReapClosesOnlyFinishedRounds: the round is over when the task closed, the
 // reviewer recorded its verdict, or the lease lapsed. A working agent is never
 // closed, and a launch fs cannot see is kept rather than killed.

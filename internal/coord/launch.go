@@ -192,6 +192,9 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 	if err != nil {
 		return DispatchResult{}, err
 	}
+	if err := refuseReviewInDevCheckout(rows, task, dir); err != nil {
+		return DispatchResult{}, err
+	}
 
 	sid := dispatchSession(task.Tid, now)
 	name := dispatchName(task.Tid, now)
@@ -244,6 +247,29 @@ func Dispatch(s *memory.Store, in DispatchInput, l Launcher) (DispatchResult, er
 		Pane: handle.Pane, Name: handle.Name, Dir: dir, Prompt: prompt,
 		CallerPane: in.Caller, Unconfirmed: unconfirmed, Previous: previous,
 	}, nil
+}
+
+// refuseReviewInDevCheckout asks the gate's question about independence one step
+// earlier. A review judges a tree its author did not work in, so it runs in a
+// checkout of its own; asking at the signature refuses a reviewer after it has read
+// the code and run every check, while asking here refuses a dispatch that was never
+// started. A development task's own dispatch is untouched — the question only has an
+// answer when the task names the development task it reviews. A development row
+// written before paths were recorded names no directory, and nothing is refused on a
+// fact that was never recorded.
+func refuseReviewInDevCheckout(rows []memory.Row, review Task, dir string) error {
+	if review.ParentDev == "" {
+		return nil
+	}
+	dev, err := loadTask(rows, review.ParentDev)
+	if err != nil {
+		return err
+	}
+	if dev.ProjectPath == "" || sameDir(dir) != sameDir(dev.ProjectPath) {
+		return nil
+	}
+	return fmt.Errorf("refusing to dispatch review %s into %s: %s was developed in %s, one directory — a review runs in a checkout of its own: `git worktree add <dir> <commit>` at the commit under review, then dispatch again with --dir <dir>",
+		review.Tid, dir, dev.Tid, dev.ProjectPath)
 }
 
 // waitForAgent waits until sid claims tid or writes evidence on it. It answers
@@ -363,6 +389,7 @@ func dispatchPrompt(task Task, project, sid, dir string, path string) string {
 		" --state dev-done --digest '<commit>' --note '<what you changed>'. This does not complete the task, and it is refused without a --digest naming the commit you finished.\n\n")
 	b.WriteString("7. Then start the review, which is how your task can close: fs dispatch --project " + project +
 		" --task <the review task id>. You do not review your own work: the reviewer is a fresh session that runs the same checks.\n")
+	b.WriteString("   Dispatch it into a worktree of its own, created at the commit under review: git worktree add /tmp/fs-review-<commit> <commit>, then pass --dir /tmp/fs-review-<commit>. A review dispatched into your own checkout is refused.\n")
 	return b.String()
 }
 

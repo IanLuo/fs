@@ -105,7 +105,7 @@ What each verb writes:
 | `claim` | `fs.bind` (`session:<sid>`), then `fs.claim` (`claim:<tid>:<round>`) | the bind is once per session and never expires |
 | `report` | `fs.event` (`ev:<tid>:<sid>:<n>`) | a check needs `--command` **and** `--exit`; a `dev-done` needs a `--digest` and an existing review task; this write is also the keepalive |
 | `done` | one `fs.event` per closed task, then closes the review row, then the development row | each close carries `closed`, the tree it blessed and the directory the reviewer signed from, so a round's duration is computable from rows; a refusal records one `fs.event` saying why; refuses when the reviewer's digest differs from the developer's, and when the signature is made in the developer's checkout |
-| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
+| `dispatch` | `fs.launch` (`launch:<tid>:<sid>`) | refuses a closed task, a live holder, a duplicate start, a directory that is not there, a review started in the developer's checkout and an agent that never takes the prompt; a launcher failure is a refusal, never a retry |
 | `path` | `fs.path` (`path:<project>:<n>`) | appended, newest wins; no task row is touched, so a moved repository is one command |
 | `reap` | nothing | closes only an agent it has a launch row for, and never one still working |
 | `status` | nothing | derived from rows on every call |
@@ -180,6 +180,14 @@ a dead one, and only the launcher can tell them apart.
 The winner is decided by memstore refusing a duplicate key, never by a comparison fs
 makes. The order is bind, then claim: a failure after step 1 burns the session and holds
 nothing, which is safe — the fix is a new session, not a retry.
+
+A review task is dispatched into a checkout of its own. `--dir` is compared with the
+development task's recorded path, both resolved through symlinks, and one directory is
+refused before an agent exists — naming both directories and `git worktree add <dir>
+<commit>`. The gate asks the same question again at the signature, so asking here spends a
+dispatch instead of a finished review. A development task's own dispatch is unchanged, a
+development row with no recorded path refuses nothing, and the developer's prompt says to
+create the worktree at the commit under review.
 
 ### The completion gate
 
