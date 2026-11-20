@@ -249,13 +249,6 @@ fs has no repair or migration path and does not rewrite shared rows. A `fail` ro
 before the `refused` state existed, whose note begins `completion refused`, keeps that
 shape; read it as a refusal, not a verdict.
 
-A close also names the agent kinds behind the two sessions, when `fs` launched both. Each
-kind is read from that session's own launch row, so a hand-run side names nothing and no
-kind is invented; when one side has no row, neither is recorded. An equal pair is recorded
-with an advisory and never refused: one benchmark reports a same-model review as inert, and
-a user with one harness must still be able to close a round. `fs done` prints the same
-advisory as `warning`, beside `dev_kind` and `review_kind`.
-
 ### Liveness
 
 - A claim is live while some row by its session is newer than `now − 120s`. There is no

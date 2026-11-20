@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/flagship-dev/flagship/internal/memory"
 )
@@ -37,12 +36,6 @@ type DoneResult struct {
 	Review string        `json:"review"`
 	Dev    string        `json:"dev"`
 	Checks []CheckResult `json:"checks"`
-	// DevKind and ReviewKind are the agent kinds fs launched for the two sessions,
-	// read from their launch rows. Empty when either session was run by hand: fs
-	// never invents a kind. Warning is the advisory a same-kind round carries.
-	DevKind    string `json:"dev_kind,omitempty"`
-	ReviewKind string `json:"review_kind,omitempty"`
-	Warning    string `json:"warning,omitempty"`
 }
 
 // Done is the completion gate.
@@ -182,25 +175,7 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	// before the rows are closed — a failure between the two is recoverable, because
 	// the retry closes and records again, where closing first would leave a closed
 	// round that no retry could ever record.
-	// Which kinds ran on the two sides is read from the launch rows, matched to the
-	// sessions that closed the round. A hand-run session has no launch row, so the
-	// fact is absent and nothing is said about it. The close records both kinds when
-	// both were launched, and an equal pair is an advisory, never a refusal: one
-	// benchmark is not a rule, and a user with one available harness must still be
-	// able to close a round.
-	devKind := launchKind(rows, dev.Tid, developer.Session)
-	reviewKind := launchKind(rows, review.Tid, in.Session)
-	if devKind == "" || reviewKind == "" {
-		// Half a pair compares with nothing, so neither kind is recorded and nothing
-		// is said: a hand-run side is a round fs was not asked to start, and a kind
-		// it never launched is not a fact about the round.
-		devKind, reviewKind = "", ""
-	}
-	advisory := kindAdvisory(devKind, reviewKind)
-	facts := closeFacts{
-		Session: in.Session, Dir: in.Dir, Digest: devDigest,
-		DevKind: devKind, ReviewKind: reviewKind, Advisory: advisory,
-	}
+	facts := closeFacts{Session: in.Session, Dir: in.Dir, Digest: devDigest}
 	for _, tid := range []string{review.Tid, dev.Tid} {
 		if err := writeClose(s, scope, ix, tid, facts); err != nil {
 			return DoneResult{}, err
@@ -218,37 +193,22 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 	if err := s.Retire(dev.rowID); err != nil {
 		return DoneResult{}, err
 	}
-	return DoneResult{
-		Review: review.Tid, Dev: dev.Tid, Checks: passed,
-		DevKind: devKind, ReviewKind: reviewKind, Warning: advisory,
-	}, nil
+	return DoneResult{Review: review.Tid, Dev: dev.Tid, Checks: passed}, nil
 }
 
 // closeFacts is everything one close records about the round it ends: who signed,
-// from where, at which tree, and — when fs launched both sides — which kinds ran.
-// The kinds and the advisory travel in the note: the close is an ordinary report,
-// and it has one bounded free-text line and no field to spare.
+// from where, and at which tree.
 type closeFacts struct {
-	Session    string
-	Dir        string
-	Digest     string
-	DevKind    string
-	ReviewKind string
-	Advisory   string
+	Session string
+	Dir     string
+	Digest  string
 }
 
-// note is the close's one line. A kind nobody recorded is not stated, so a hand-run
-// round reads exactly as it did before: where the signature was made.
+// note is the close's one line: where the signature was made.
 func (f closeFacts) note() string {
 	var parts []string
 	if f.Dir != "" {
 		parts = append(parts, "signed from "+f.Dir)
-	}
-	if f.DevKind != "" && f.ReviewKind != "" {
-		parts = append(parts, fmt.Sprintf("developer kind %s, reviewer kind %s", f.DevKind, f.ReviewKind))
-		if f.Advisory != "" {
-			parts = append(parts, f.Advisory)
-		}
 	}
 	return strings.Join(parts, "; ")
 }
@@ -271,36 +231,6 @@ func writeClose(s *memory.Store, scope string, ix *memory.Index, tid string, f c
 		return err
 	}
 	return s.PutEvent(scope, tid, f.Session, ix.MaxEvent(tid, f.Session)+1, text, string(extra))
-}
-
-// launchKind is the agent kind fs launched for one session on one task, or "" when
-// fs launched nothing for that pair. Matching on the session and not only the task
-// is what keeps a kind from being attributed to a session that never had one: a
-// hand-run reviewer that followed an unconfirmed dispatch is not that dispatch's
-// agent, and fs must not say it was.
-func launchKind(rows []memory.Row, tid, sid string) string {
-	var best launchExtra
-	var bestAt time.Time
-	for _, r := range rows {
-		ex, ok := decodeLaunch(r)
-		if !ok || ex.Task != tid || ex.Session != sid {
-			continue
-		}
-		if ex.At.After(bestAt) {
-			bestAt, best = ex.At, ex
-		}
-	}
-	return best.Kind
-}
-
-// kindAdvisory says what an equal pair means, and says nothing otherwise. One
-// benchmark reports a same-model review as inert and a weaker cross-model one as
-// worse, so fs records the fact it can see and leaves the decision to the operator.
-func kindAdvisory(devKind, reviewKind string) string {
-	if devKind == "" || reviewKind == "" || devKind != reviewKind {
-		return ""
-	}
-	return fmt.Sprintf("advisory: the developer and the reviewer both ran kind %s, and a same-kind review is weak evidence; a capable reviewer of a different kind is stronger", devKind)
 }
 
 // sameDir is the string two directories are compared as: symlinks followed where
