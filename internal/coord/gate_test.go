@@ -19,22 +19,90 @@ func reviewFixture(t *testing.T) (*memory.Store, coord.Task, coord.Task) {
 	return s, dev, review
 }
 
-// TestDoneRefusesWithoutAReviewTask is the "missing reviewer" case: a worker cannot
-// complete its own work, and saying so is a refusal, not a warning.
-func TestDoneRefusesWithoutAReviewTask(t *testing.T) {
+// TestDevDoneNeedsAReviewTask is P0-1's acceptance test: a development task
+// reports dev-done only once its review task exists. The refusal names the task
+// that is missing and the verb that creates it, and the same report is accepted
+// after that task is added.
+func TestDevDoneNeedsAReviewTask(t *testing.T) {
 	s, _ := open(t)
 	dev := add(t, s, "p")
 	claim(t, s, "p", "s-dev", dev.Tid)
-	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done"})
 
-	_, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-dev", Task: dev.Tid})
+	_, err := coord.Report(s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done"})
 	if err == nil {
-		t.Fatal("a worker completed its own development task")
+		t.Fatal("dev-done was recorded with no review task")
 	}
-	if !strings.Contains(err.Error(), "review") {
-		t.Fatalf("refusal %q does not say a review task is required", err)
+	for _, want := range []string{"no review task", dev.Tid, "--review-of"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
 	}
-	assertOpen(t, s, dev.Tid)
+	// The refused report left nothing behind: the round has not moved.
+	st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Projects[0].Tasks[0]; got.RoundState != "" || len(got.Evidence) != 0 {
+		t.Fatalf("task = %+v, want no round state and no evidence after a refusal", got)
+	}
+
+	// With the review task in place the same report is accepted.
+	addReview(t, s, "p", dev.Tid)
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done"})
+	st, err = coord.Status(s, coord.StatusInput{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range st.Projects[0].Tasks {
+		if task.Task == dev.Tid && task.RoundState != coord.RoundReviewOpen {
+			t.Fatalf("round_state = %q, want %q once the review task exists", task.RoundState, coord.RoundReviewOpen)
+		}
+	}
+}
+
+// TestRoundStateMarksAStalledRound: a dev-done written before the refusal above
+// existed still stalls a round, and append-only records cannot rewrite it. Status
+// derives the stall so a reader sees it without knowing to look.
+func TestRoundStateMarksAStalledRound(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	claim(t, s, "p", "s-dev", dev.Tid)
+
+	// The row an older fs wrote: dev-done with no review task in existence.
+	extra := `{"state":"dev-done","role":"dev","digest":"abc123"}`
+	if err := s.PutEvent(memory.Scope("p"), dev.Tid, "s-dev", 1, "dev-done", extra); err != nil {
+		t.Fatalf("forge the older dev-done: %v", err)
+	}
+
+	round := func() map[string]string {
+		t.Helper()
+		st, err := coord.Status(s, coord.StatusInput{Project: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, task := range st.Projects[0].Tasks {
+			out[task.Task] = task.RoundState
+		}
+		return out
+	}
+
+	if got := round()[dev.Tid]; got != coord.RoundAwaitingReview {
+		t.Fatalf("round_state = %q, want %q for a dev-done with no review task", got, coord.RoundAwaitingReview)
+	}
+
+	review := addReview(t, s, "p", dev.Tid)
+	got := round()
+	if got[dev.Tid] != coord.RoundReviewOpen || got[review.Tid] != coord.RoundReviewOpen {
+		t.Fatalf("round_state = %v, want review-open on both the development task and its review", got)
+	}
+
+	// A verdict ends the wait; the round is no longer between two steps.
+	claim(t, s, "p", "s-rev", review.Tid)
+	report(t, s, coord.ReportInput{Project: "p", Session: "s-rev", Task: review.Tid, Role: "review", State: "fail", Note: "parser misses empty input"})
+	if got := round()[review.Tid]; got != "" {
+		t.Fatalf("round_state = %q, want empty once a verdict is recorded", got)
+	}
 }
 
 // TestDoneRefusesWithoutReviewerRunChecks is the "missing required check" case: the

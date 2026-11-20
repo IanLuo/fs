@@ -288,6 +288,21 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	if err := hold(ix, in.Session, in.Task, now); err != nil {
 		return Evidence{}, err
 	}
+	// A development task's dev-done is the handover to review, so it is refused
+	// until the review task exists. The refusal is the point: without it a round
+	// stalls where nobody looks, because a task at dev-done and a task being
+	// worked read the same from outside until someone remembers the review is
+	// owed. The message names the verb that fixes it.
+	if in.State == "dev-done" {
+		task, err := loadTask(rows, in.Task)
+		if err != nil {
+			return Evidence{}, err
+		}
+		if task.ParentDev == "" && !hasReviewTask(rows, task.Tid) {
+			return Evidence{}, fmt.Errorf("no review task for %s: a development task reports dev-done only once its review exists — run `fs add --project %s --goal 'review %s' --review-of %s`",
+				task.Tid, in.Project, task.Tid, task.Tid)
+		}
+	}
 	extra, err := json.Marshal(eventExtra{
 		State: in.State, Role: in.Role, Command: in.Command,
 		Exit: in.Exit, Digest: in.Digest, Note: in.Note,

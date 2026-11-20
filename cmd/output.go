@@ -76,6 +76,7 @@ const (
 	colTask  = 18
 	colKind  = 6
 	colState = 7
+	colWait  = 15
 	colHold  = 16
 	colRound = 5
 	colLease = 8
@@ -129,11 +130,12 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s\n", projectHeader(p.Project, p.Dir))
-		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
+		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
 			colTask, "TASK", colKind, "KIND", colState, "STATE", colHold, "HOLDER",
-			colRound, "ROUND", colLease, "LEASE", colAgent, "AGENT", colProc, "PROCESS", "GOAL")
+			colRound, "ROUND", colLease, "LEASE", colAgent, "AGENT", colProc, "PROCESS",
+			colWait, "WAITING", "GOAL")
 		for _, t := range p.Tasks {
-			fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
+			fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
 				colTask, cell(t.Task, colTask),
 				colKind, cell(t.Kind, colKind),
 				colState, cell(t.State, colState),
@@ -142,6 +144,7 @@ func renderStatus(r coord.StatusReport, now time.Time) string {
 				colLease, cell(lease(t, now), colLease),
 				colAgent, cell(agentCell(t.Agent), colAgent),
 				colProc, cell(processCell(t.Process), colProc),
+				colWait, cell(waiting(t), colWait),
 				cell(oneLine(t.Goal), colGoal))
 		}
 	}
@@ -181,6 +184,16 @@ func projectHeader(project, dir string) string {
 		return project
 	}
 	return project + "  " + dir
+}
+
+// waiting is where the round stands between its steps, or "-" when it is not
+// between two of them. It is the derived round state: a round parked without a
+// review task says so here before anyone has to remember it.
+func waiting(t coord.TaskStatus) string {
+	if t.RoundState == "" {
+		return "-"
+	}
+	return t.RoundState
 }
 
 // holder is who holds the task, or "-" when nobody does.

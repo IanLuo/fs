@@ -419,12 +419,13 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 		t.Fatalf("a second session claimed held work: %d %v", code, env)
 	}
 
-	mustOK(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
-		"--state", "dev-done", "--note", "ready for review")
-
-	// The developer cannot complete its own work.
-	if code, env := invoke(t, "done", "--project", "p", "--session", "s-dev", "--task", dev); code != 1 {
-		t.Fatalf("the developer completed its own task: %d %v", code, env)
+	// The round cannot leave development without a review task: dev-done is
+	// refused until the review exists, and the refusal names the verb.
+	if code, env := invoke(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
+		"--state", "dev-done", "--digest", "abc123"); code != 1 {
+		t.Fatalf("dev-done was recorded with no review task: %d %v", code, env)
+	} else if msg, _ := env["error"].(string); !strings.Contains(msg, "--review-of") {
+		t.Fatalf("refusal %q does not name the verb that creates the review", msg)
 	}
 
 	review := mustOK(t, "add", "--project", "p", "--goal", "review "+dev, "--review-of", dev)
@@ -432,6 +433,25 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	if checks, _ := review["checks"].([]any); len(checks) != 1 || checks[0] != "go test ./..." {
 		t.Fatalf("the review did not inherit the declared checks: %v", review)
 	}
+
+	// Status derives where the round stands: the review is the open step, and the
+	// development task is not between steps until it hands the work over.
+	waiting := roundStates(t, "p")
+	if waiting[rev] != "review-open" || waiting[dev] != "" {
+		t.Fatalf("round_state = %v, want review-open on the review and nothing on the development task", waiting)
+	}
+	mustOK(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
+		"--state", "dev-done", "--digest", "abc123", "--note", "ready for review")
+	waiting = roundStates(t, "p")
+	if waiting[dev] != "review-open" {
+		t.Fatalf("round_state for %s = %q, want review-open while the review has no verdict", dev, waiting[dev])
+	}
+
+	// The developer cannot complete its own work.
+	if code, env := invoke(t, "done", "--project", "p", "--session", "s-dev", "--task", dev); code != 1 {
+		t.Fatalf("the developer completed its own task: %d %v", code, env)
+	}
+
 	mustOK(t, "claim", "--project", "p", "--session", "s-rev", "--task", rev)
 
 	// No recorded run yet: refused.
@@ -471,6 +491,24 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	if states[dev] != "done" || states[rev] != "done" {
 		t.Fatalf("states = %v, want both done", states)
 	}
+}
+
+// roundStates reads one project's derived round state per task from the status
+// envelope: the field a caller sees between a round's steps.
+func roundStates(t *testing.T, project string) map[string]string {
+	t.Helper()
+	status := mustOK(t, "status", "--project", project)
+	projects, _ := status["projects"].([]any)
+	out := map[string]string{}
+	for _, rawProject := range projects {
+		tasks, _ := rawProject.(map[string]any)["tasks"].([]any)
+		for _, rawTask := range tasks {
+			task := rawTask.(map[string]any)
+			state, _ := task["round_state"].(string)
+			out[task["task"].(string)] = state
+		}
+	}
+	return out
 }
 
 // TestStorePathComesFromTheEnvironment: fs opens the shared file it is told to open,

@@ -69,11 +69,26 @@ type Observed struct {
 	Fresh    bool       `json:"fresh"`
 }
 
+// The two positions a round can be stuck in between its steps. They are derived
+// from rows, never written: `awaiting-review` is development work reported done
+// with no review task, and `review-open` is review work with no verdict yet.
+const (
+	RoundAwaitingReview = "awaiting-review"
+	RoundReviewOpen     = "review-open"
+)
+
 // TaskStatus is one task with everything a reader needs to act on it.
 type TaskStatus struct {
-	Task         string     `json:"task"`
-	Kind         string     `json:"kind"`
-	State        string     `json:"state"`
+	Task  string `json:"task"`
+	Kind  string `json:"kind"`
+	State string `json:"state"`
+	// RoundState is where the round stands between its steps, derived on every
+	// read: awaiting-review once the development work is reported done and no
+	// review task exists, review-open once a review task exists with no verdict.
+	// Empty at every other point. It is a new field rather than a new `state`
+	// value because `state` is the word callers act on: a task a caller sees as
+	// `open` must stay actable.
+	RoundState   string     `json:"round_state,omitempty"`
 	Goal         string     `json:"goal"`
 	Checks       []string   `json:"checks"`
 	ProjectPath  string     `json:"project_path,omitempty"`
@@ -194,11 +209,13 @@ func Status(s *memory.Store, in StatusInput) (StatusReport, error) {
 			continue
 		}
 		entry := ProjectStatus{Project: project, Dir: projectDir(byScope[scope]), Tasks: []TaskStatus{}}
-		for _, task := range allTasks(byScope[scope]) {
+		tasks := allTasks(byScope[scope])
+		rounds := roundStates(tasks, ix, now)
+		for _, task := range tasks {
 			if onlyTask != "" && task.Tid != onlyTask {
 				continue
 			}
-			entry.Tasks = append(entry.Tasks, statusOf(task, ix, now, launches, live, in.Launcher != nil && warn == ""))
+			entry.Tasks = append(entry.Tasks, statusOf(task, ix, now, launches, live, in.Launcher != nil && warn == "", rounds[task.Tid]))
 		}
 		out.Projects = append(out.Projects, entry)
 	}
@@ -249,7 +266,7 @@ func processOf(task string, launches map[string]launchExtra, live map[string]str
 
 // statusOf derives one task's state, who holds it, what was reported about it and
 // how stale each of those facts is.
-func statusOf(task Task, ix *memory.Index, now time.Time, launches map[string]launchExtra, live map[string]string, canSee bool) TaskStatus {
+func statusOf(task Task, ix *memory.Index, now time.Time, launches map[string]launchExtra, live map[string]string, canSee bool, round string) TaskStatus {
 	st := TaskStatus{
 		Task:        task.Tid,
 		Kind:        task.Kind,
@@ -258,6 +275,7 @@ func statusOf(task Task, ix *memory.Index, now time.Time, launches map[string]la
 		ProjectPath: task.ProjectPath,
 		ParentDev:   task.ParentDev,
 		State:       "open",
+		RoundState:  round,
 		Process:     processOf(task.Tid, launches, live, canSee),
 	}
 	if task.done {
@@ -285,6 +303,61 @@ func statusOf(task Task, ix *memory.Index, now time.Time, launches map[string]la
 	// first, bounded by eventsFor: status carries reports, never a transcript.
 	st.Evidence = events
 	return st
+}
+
+// roundStates derives where each open task's round stands, from rows alone. The
+// dev-done refusal is what stops a round from stalling without a review task;
+// this is what makes such a round visible when it exists anyway — a row written
+// before that refusal, which append-only records cannot rewrite.
+func roundStates(tasks []Task, ix *memory.Index, now time.Time) map[string]string {
+	verdict := map[string]bool{}
+	byParent := map[string][]Task{}
+	for _, t := range tasks {
+		if t.done || t.ParentDev == "" {
+			continue
+		}
+		byParent[t.ParentDev] = append(byParent[t.ParentDev], t)
+		verdict[t.Tid] = hasVerdict(ix, t.Tid, now)
+	}
+	out := map[string]string{}
+	for _, t := range tasks {
+		if t.done {
+			continue
+		}
+		if t.ParentDev != "" {
+			if !verdict[t.Tid] {
+				out[t.Tid] = RoundReviewOpen
+			}
+			continue
+		}
+		if newestReported(eventsFor(ix, t.Tid, now), "dev") != "dev-done" {
+			continue
+		}
+		open := false
+		for _, r := range byParent[t.Tid] {
+			if !verdict[r.Tid] {
+				open = true
+			}
+		}
+		if open {
+			out[t.Tid] = RoundReviewOpen
+		} else {
+			out[t.Tid] = RoundAwaitingReview
+		}
+	}
+	return out
+}
+
+// newestReported is the newest report of one role, whatever its age. Where a
+// round stands is a fact about the record, not about liveness: a dev-done written
+// before a lease lapsed is still the round's last step.
+func newestReported(events []Evidence, role string) string {
+	for _, ev := range events {
+		if ev.Role == role {
+			return ev.State
+		}
+	}
+	return ""
 }
 
 // observed picks the newest report of one kind and says whether it still stands.

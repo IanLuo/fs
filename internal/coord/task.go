@@ -259,6 +259,42 @@ func kindOf(parentDev string) string {
 	return KindDev
 }
 
+// hasReviewTask reports whether any task names this development task as the work
+// it reviews. It reads task rows, not history: a review that was closed by a
+// completion is still the review this round had, and refusing to record a
+// handover that happened would not make it unhappen.
+func hasReviewTask(rows []memory.Row, devTid string) bool {
+	for _, r := range rows {
+		if r.Kind != memory.KindTask {
+			continue
+		}
+		t, err := decodeTask(r)
+		if err != nil {
+			continue
+		}
+		if t.ParentDev == devTid {
+			return true
+		}
+	}
+	return false
+}
+
+// hasVerdict reports whether a review task carries a reviewer's verdict: a pass,
+// fail or blocked report from the review role. A review with no verdict is the
+// one ready signal a round has, and a second one would be a second review of the
+// same round.
+func hasVerdict(ix *memory.Index, tid string, now time.Time) bool {
+	for _, ev := range eventsFor(ix, tid, now) {
+		if ev.Role != "review" {
+			continue
+		}
+		if ev.State == "pass" || ev.State == "fail" || ev.State == "blocked" {
+			return true
+		}
+	}
+	return false
+}
+
 // newTid mints a task identity. It is random rather than sequential because two
 // users of the same memstore must never mint the same one.
 func newTid() string {

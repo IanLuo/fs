@@ -182,6 +182,8 @@ func TestStatusShowsDoneAndEvidence(t *testing.T) {
 func TestStatusCarriesTheDevelopmentReport(t *testing.T) {
 	s, _ := open(t)
 	task := add(t, s, "p")
+	// A review task exists because the round cannot reach dev-done without one.
+	addReview(t, s, "p", task.Tid)
 	claim(t, s, "p", "s-dev", task.Tid)
 	report(t, s, coord.ReportInput{Project: "p", Session: "s-dev", Task: task.Tid, State: "progress",
 		Note: "ast.rs next", Digest: "1 test red: TestParseUnary"})
@@ -192,7 +194,12 @@ func TestStatusCarriesTheDevelopmentReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev := st.Projects[0].Tasks[0].Evidence
+	var ev []coord.Evidence
+	for _, got := range st.Projects[0].Tasks {
+		if got.Task == task.Tid {
+			ev = got.Evidence
+		}
+	}
 	if len(ev) != 2 {
 		t.Fatalf("evidence = %+v, want both development reports", ev)
 	}
