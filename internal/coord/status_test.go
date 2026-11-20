@@ -184,6 +184,85 @@ func TestStatusShowsDoneAndEvidence(t *testing.T) {
 	}
 }
 
+// TestAVerdictNamesItsRound: a verdict is a fact about one round, and the claim rows
+// already carry it, so the verdict row does too. Without it a round that needed four
+// attempts and a round that needed one read the same, and a spinning round looks like
+// a slow one. The task's round is the claim's, live or lapsed, and empty on a task
+// nobody ever claimed.
+func TestAVerdictNamesItsRound(t *testing.T) {
+	s, now := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	devDone(t, s, "p", "s-dev", dev.Tid)
+	claim(t, s, "p", "s-rev", review.Tid)
+	// The lease lapses before the review finishes; the same session re-claims for
+	// round 2, which is the recovery the prompt names.
+	*now = now.Add(2 * memory.DefaultTTL)
+	if got := claim(t, s, "p", "s-rev", review.Tid); got.Round != 2 {
+		t.Fatalf("round = %d, want 2", got.Round)
+	}
+	runCheck(t, s, "p", "s-rev", review.Tid, dev.Checks[0], 0)
+
+	byTask := statusByTask(t, s, "p")
+	ev := byTask[review.Tid].Evidence
+	if len(ev) == 0 || ev[0].State != "pass" || ev[0].Round != 2 {
+		t.Fatalf("evidence = %+v, want the newest verdict to carry round 2", ev)
+	}
+	if byTask[review.Tid].Round != 2 {
+		t.Errorf("round = %d, want 2", byTask[review.Tid].Round)
+	}
+
+	// A closed task keeps the round of its last claim: the claim row outlives the
+	// close, and nothing rewrites it. The lease lapses and the round stays readable.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	*now = now.Add(2 * memory.DefaultTTL)
+	byTask = statusByTask(t, s, "p")
+	if got := byTask[review.Tid]; got.State != "done" || got.Round != 2 || got.LeaseLive {
+		t.Errorf("closed review = %s at round %d (lease live %v), want done at round 2 with no live lease", got.State, got.Round, got.LeaseLive)
+	}
+
+	// A task nobody claimed has no round to name.
+	hand := add(t, s, "p")
+	if got := statusByTask(t, s, "p")[hand.Tid].Round; got != 0 {
+		t.Errorf("unclaimed task round = %d, want none", got)
+	}
+}
+
+// TestARefusalNamesItsRound: the gate declining to close writes `refused`, not a
+// verdict, and it names the round it declined — otherwise a round refused three
+// times reads as one refusal.
+func TestARefusalNamesItsRound(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	claim(t, s, "p", "s-rev", review.Tid)
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err == nil {
+		t.Fatal("completion passed with no reviewer-run check")
+	}
+	ev := statusByTask(t, s, "p")[review.Tid].Evidence
+	if len(ev) == 0 || ev[0].State != "refused" || ev[0].Round != 1 {
+		t.Fatalf("evidence = %+v, want the refusal to carry round 1", ev)
+	}
+}
+
+// statusByTask reads one project's status and indexes it by task.
+func statusByTask(t *testing.T, s *memory.Store, project string) map[string]coord.TaskStatus {
+	t.Helper()
+	st, err := coord.Status(s, coord.StatusInput{Project: project})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	out := map[string]coord.TaskStatus{}
+	for _, task := range st.Projects[0].Tasks {
+		out[task.Task] = task
+	}
+	return out
+}
+
 // TestStatusCarriesTheDevelopmentReport: when a session dies its context is gone,
 // so the next session reads what it left. The note and digest are the only record
 // of where the work stopped, and they have to be in status, newest first, with the

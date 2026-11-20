@@ -156,6 +156,7 @@ func Done(s *memory.Store, in DoneInput) (DoneResult, error) {
 		// not a reviewer's verdict that a check failed.
 		extra, err := json.Marshal(eventExtra{
 			State: "refused", Role: "review", Note: clip(reason, maxNote),
+			Round: roundOf(ix, review.Tid, "refused"),
 		})
 		if err != nil {
 			return DoneResult{}, err

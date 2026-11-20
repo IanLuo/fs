@@ -226,6 +226,11 @@ A refusal is recorded as `state: refused`, not `fail`: the gate declined to clos
 is not a reviewer's verdict that a check failed. The review stays open, reap does not treat
 the refusal as a verdict, and a later passing run plus `fs done` still closes it as pass.
 
+A verdict and a refusal carry the `round` of the claim that wrote them, read from the claim
+row, which already stores it: a round that needed four attempts is a fact of the record,
+not an inference from timestamps. `progress` and `dev-done` describe work inside a round and
+carry none, so a row written before the field reads as no round recorded.
+
 A close is recorded as `state: closed`, one row on each task the gate closed, written
 before the rows are closed so a failure between the two is recoverable. It carries the
 reviewer's session, the tree it blessed and the directory it signed from, and it is not an

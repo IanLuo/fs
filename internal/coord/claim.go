@@ -213,9 +213,21 @@ var (
 		"review":  true, // an independent reviewer's run of a check
 		"runtime": true, // a harness observing process lifecycle
 	}
+	// verdictStates are the reports that judge a round: a reviewer's verdict, and
+	// the gate's refusal to close on one. Those rows carry the round the claim held,
+	// so "this was round 4" is a fact of the record rather than an inference from
+	// timestamps. progress and dev-done describe work inside a round and carry no
+	// round; a row written before this field reads as no round recorded.
+	verdictStates = map[string]bool{
+		"pass":    true,
+		"fail":    true,
+		"blocked": true,
+		"refused": true,
+	}
 )
 
-// eventExtra is a report row's extra: the six fields the design names.
+// eventExtra is a report row's extra: the fields the design names, plus the round a
+// verdict judged.
 type eventExtra struct {
 	State   string `json:"state"`
 	Role    string `json:"role"`
@@ -223,17 +235,21 @@ type eventExtra struct {
 	Exit    *int   `json:"exit,omitempty"`
 	Digest  string `json:"digest,omitempty"`
 	Note    string `json:"note,omitempty"`
+	Round   int    `json:"round,omitempty"`
 }
 
 // Evidence is one recorded report as a reader sees it: what happened, who said
 // so, when, and how stale that is.
 type Evidence struct {
-	State   string     `json:"state"`
-	Role    string     `json:"role"`
-	Command string     `json:"command,omitempty"`
-	Exit    *int       `json:"exit,omitempty"`
-	Digest  string     `json:"digest,omitempty"`
-	Note    string     `json:"note,omitempty"`
+	State   string `json:"state"`
+	Role    string `json:"role"`
+	Command string `json:"command,omitempty"`
+	Exit    *int   `json:"exit,omitempty"`
+	Digest  string `json:"digest,omitempty"`
+	Note    string `json:"note,omitempty"`
+	// Round is the round of the claim that wrote this verdict or refusal. Empty on
+	// the reports that describe work inside a round, and on rows older than it.
+	Round   int        `json:"round,omitempty"`
 	Session string     `json:"session"`
 	At      *time.Time `json:"at,omitempty"`
 	Age     *float64   `json:"age_seconds,omitempty"`
@@ -319,9 +335,10 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 			return Evidence{}, fmt.Errorf("no digest: a dev-done names the tree it finished (`--digest <commit>`), so the review can name what it judged")
 		}
 	}
+	round := roundOf(ix, in.Task, in.State)
 	extra, err := json.Marshal(eventExtra{
 		State: in.State, Role: in.Role, Command: in.Command,
-		Exit: in.Exit, Digest: in.Digest, Note: in.Note,
+		Exit: in.Exit, Digest: in.Digest, Note: in.Note, Round: round,
 	})
 	if err != nil {
 		return Evidence{}, err
@@ -341,8 +358,22 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	at := now
 	return Evidence{
 		State: in.State, Role: in.Role, Command: in.Command, Exit: in.Exit,
-		Digest: in.Digest, Note: in.Note, Session: in.Session, At: &at,
+		Digest: in.Digest, Note: in.Note, Session: in.Session, At: &at, Round: round,
 	}, nil
+}
+
+// roundOf is the round a report belongs to, when the report is one a round is known
+// by. The claim rows already carry it — every racer of one round builds the same key
+// — so a verdict names the round it judged without a second record of the round.
+func roundOf(ix *memory.Index, tid, state string) int {
+	if !verdictStates[state] {
+		return 0
+	}
+	held, ok := ix.Claim(tid)
+	if !ok {
+		return 0
+	}
+	return held.Round
 }
 
 // eventsFor decodes every report on one task, newest first, with each one's age
@@ -360,7 +391,8 @@ func eventsFor(ix *memory.Index, tid string, now time.Time) []Evidence {
 		age := now.Sub(at).Seconds()
 		out = append(out, Evidence{
 			State: ex.State, Role: ex.Role, Command: ex.Command, Exit: ex.Exit,
-			Digest: ex.Digest, Note: ex.Note, Session: sid, At: &at, Age: &age,
+			Digest: ex.Digest, Note: ex.Note, Round: ex.Round,
+			Session: sid, At: &at, Age: &age,
 			index: idx,
 		})
 	}
