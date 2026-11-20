@@ -43,7 +43,9 @@ var helpBlocks = []struct{ name, block string }{
             [--digest D] [--note TEXT]   Record a report. This is also the
                                      keepalive: there is no renew verb.
                                      A dev-done needs --digest and an existing
-                                     review task.`},
+                                     review task. --role defaults to the task's
+                                     kind: review on a review task, dev on
+                                     development work.`},
 	{"done", `  fs done   --project P --session S --task TID [--note TEXT]
                                      Complete a review. Refused unless this
                                      reviewer ran every declared check, each
@@ -238,7 +240,7 @@ func reportCmd(args []string) (any, error) {
 	session := fs.String("session", "", "this agent session's stable identity")
 	task := fs.String("task", "", "the task this session holds")
 	state := fs.String("state", "", "progress, dev-done, pass, fail, blocked or refused")
-	role := fs.String("role", "dev", "who is reporting: dev, review or runtime")
+	role := fs.String("role", "", "who is reporting: dev, review or runtime; defaults to the task's kind")
 	command := fs.String("command", "", "the exact check that was run")
 	digest := fs.String("digest", "", "a short digest of what the check produced")
 	note := fs.String("note", "", "one bounded line of context")

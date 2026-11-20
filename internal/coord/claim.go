@@ -279,10 +279,10 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	// One normalisation, at write time: a digest is compared as recorded, with no
 	// abbreviation folding, so what a reader sees is what the gate compared.
 	in.Digest = strings.TrimSpace(in.Digest)
-	if in.Role == "" {
-		in.Role = "dev"
-	}
-	if !roles[in.Role] {
+	// A role that was given is one of the three, or a refusal. An omitted role is
+	// derived from the task below: the work says who is reporting it, and a verdict
+	// written under the wrong role is one the gate cannot see.
+	if in.Role != "" && !roles[in.Role] {
 		return Evidence{}, fmt.Errorf("unknown role %q: one of dev, review, runtime", in.Role)
 	}
 	if in.Command != "" && in.Exit == nil {
@@ -314,16 +314,22 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 	if err := hold(ix, in.Session, in.Task, now); err != nil {
 		return Evidence{}, err
 	}
+	task, err := loadTask(rows, in.Task)
+	if err != nil {
+		return Evidence{}, err
+	}
+	// The role follows the task when the caller named none: a hand-run reviewer that
+	// omits --role still records a verdict the gate can read. A role the caller named
+	// is respected, because the harness's runtime observations name themselves.
+	if in.Role == "" {
+		in.Role = roleOf(task)
+	}
 	// A development task's dev-done is the handover to review, so it is refused
 	// until the review task exists. The refusal is the point: without it a round
 	// stalls where nobody looks, because a task at dev-done and a task being
 	// worked read the same from outside until someone remembers the review is
 	// owed. The message names the verb that fixes it.
 	if in.State == "dev-done" {
-		task, err := loadTask(rows, in.Task)
-		if err != nil {
-			return Evidence{}, err
-		}
 		if task.ParentDev == "" && !hasReviewTask(rows, task.Tid) {
 			return Evidence{}, fmt.Errorf("no review task for %s: a development task reports dev-done only once its review exists — run `fs add --project %s --goal 'review %s' --review-of %s`",
 				task.Tid, in.Project, task.Tid, task.Tid)
@@ -360,6 +366,17 @@ func Report(s *memory.Store, in ReportInput) (Evidence, error) {
 		State: in.State, Role: in.Role, Command: in.Command, Exit: in.Exit,
 		Digest: in.Digest, Note: in.Note, Session: in.Session, At: &at, Round: round,
 	}, nil
+}
+
+// roleOf names the role a report belongs to when the caller did not say. The session
+// holding a review task is the reviewer, and the session holding development work is
+// the developer: the role is read from the task, never guessed from the state, because
+// a pass recorded under the wrong role is a verdict the gate cannot see.
+func roleOf(t Task) string {
+	if t.Kind == KindReview {
+		return "review"
+	}
+	return "dev"
 }
 
 // roundOf is the round a report belongs to, when the report is one a round is known

@@ -358,3 +358,47 @@ func TestClaimDoesNotBurnASessionOnABadTask(t *testing.T) {
 		t.Fatalf("claim after a bad id = %+v, want the real task at round 1", got)
 	}
 }
+
+// TestReportRoleFollowsTheTask is round 4 item B's acceptance test: a hand-run
+// reviewer that omits the role records its verdict under `review`, so the gate reads
+// it, and a development report records `dev`. Before, the omitted role was `dev` for
+// both, and `fs done` blamed a missing run instead of the wrong role.
+func TestReportRoleFollowsTheTask(t *testing.T) {
+	s, _ := open(t)
+	dev := add(t, s, "p")
+	review := addReview(t, s, "p", dev.Tid)
+	claim(t, s, "p", "s-dev", dev.Tid)
+	claim(t, s, "p", "s-rev", review.Tid)
+
+	// The reviewer names no role. The review task supplies it.
+	got := report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid,
+		State: "pass", Command: dev.Checks[0], Exit: exit(0), Digest: fixtureDigest,
+	})
+	if got.Role != "review" {
+		t.Fatalf("role = %q, want review for a report on a review task", got.Role)
+	}
+	// So does the development handover, as the developer.
+	handover := report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-dev", Task: dev.Tid, State: "dev-done", Digest: fixtureDigest,
+	})
+	if handover.Role != "dev" {
+		t.Fatalf("role = %q, want dev for a report on development work", handover.Role)
+	}
+	// A role the caller names is kept: a harness observation is not the reviewer's.
+	observed := report(t, s, coord.ReportInput{
+		Project: "p", Session: "s-rev", Task: review.Tid, State: "progress", Role: "runtime", Note: "pane alive",
+	})
+	if observed.Role != "runtime" {
+		t.Fatalf("role = %q, want the runtime role the caller named", observed.Role)
+	}
+	// An unknown role is still refused, named, and writes nothing.
+	if _, err := coord.Report(s, coord.ReportInput{Project: "p", Session: "s-rev", Task: review.Tid, State: "pass", Role: "reviewer"}); err == nil {
+		t.Fatal("an unknown role was recorded")
+	}
+	// The gate reads the pass the task supplied the role for: the round closes
+	// without a second report.
+	if _, err := coord.Done(s, coord.DoneInput{Project: "p", Session: "s-rev", Task: review.Tid}); err != nil {
+		t.Fatalf("the gate did not read the derived role: %v", err)
+	}
+}

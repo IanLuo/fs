@@ -494,6 +494,33 @@ func TestFiveVerbsEndToOneCompletion(t *testing.T) {
 	}
 }
 
+// TestReportDefaultsTheRoleFromTheTask is item B through the CLI: a report that names
+// no role takes it from the task, so the verdict a hand-run reviewer writes is the one
+// the gate reads.
+func TestReportDefaultsTheRoleFromTheTask(t *testing.T) {
+	scratch(t)
+	add := mustOK(t, "add", "--project", "p", "--goal", "ship it", "--check", "true")
+	dev, _ := add["task"].(string)
+	review := mustOK(t, "add", "--project", "p", "--goal", "review "+dev, "--review-of", dev)
+	rev, _ := review["task"].(string)
+	mustOK(t, "claim", "--project", "p", "--session", "s-dev", "--task", dev)
+	mustOK(t, "report", "--project", "p", "--session", "s-dev", "--task", dev,
+		"--state", "dev-done", "--digest", "abc123")
+	mustOK(t, "claim", "--project", "p", "--session", "s-rev", "--task", rev)
+
+	// No --role: the review task supplies it, and the report says so.
+	pass := mustOK(t, "report", "--project", "p", "--session", "s-rev", "--task", rev,
+		"--state", "pass", "--command", "true", "--exit", "0", "--digest", "abc123")
+	if pass["role"] != "review" {
+		t.Fatalf("role = %v, want review for a report on a review task that named none", pass["role"])
+	}
+
+	// The gate reads that verdict: the round closes with no second report.
+	if done := mustOK(t, "done", "--project", "p", "--session", "s-rev", "--task", rev); done["review"] != rev || done["dev"] != dev {
+		t.Fatalf("done = %v, want both tasks named", done)
+	}
+}
+
 // TestDoneSignsFromItsWorkingDirectory is P1-2 through the CLI: the gate reads the
 // directory the command runs in, so a reviewer signing from the developer's
 // checkout is refused and a signature from anywhere else closes the round.

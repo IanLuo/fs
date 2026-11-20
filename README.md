@@ -41,6 +41,13 @@ States: `progress`, `dev-done`, `pass`, `fail`, `blocked`, `refused`. `refused` 
 written by `fs done` when the gate declines to close; it is not a reviewer verdict.
 `closed` is written by `fs done` on success and is never a state `fs report` accepts.
 
+`--role` is omitted by most callers, and the task supplies it: a report on a review task
+records `review`, and one on development work records `dev`. The role follows the work
+so a hand-run reviewer that forgets the flag still records a verdict the gate can read;
+before, that report was stored as `dev`, which `fs done` ignores, and completion was
+refused for a missing run rather than a wrong role. A role you name is kept as given,
+so a harness observation stays `runtime`.
+
 A round has two gated handovers below `claim`. `dev-done` is refused until the review
 task exists and carries the tree the developer finished (`--digest <commit>`);
 `fs add --review-of` is refused while one open review of that task has no verdict yet.
