@@ -368,6 +368,125 @@ func TestCloseIsRecordedForEveryClosedTask(t *testing.T) {
 	}
 }
 
+// TestCloseRecordsTheLaunchKinds is P1-3's acceptance test: a close names the agent
+// kinds behind the two sessions, and a same-kind round closes with an advisory —
+// never a refusal, because one benchmark is not a rule. A side fs did not launch
+// has no kind, so nothing is claimed about it.
+func TestCloseRecordsTheLaunchKinds(t *testing.T) {
+	// round runs one whole round and returns the close result and the close note of
+	// each closed task. A non-empty kind dispatches that side; empty runs it by hand,
+	// as a human at a shell would.
+	round := func(t *testing.T, devKind, reviewKind string) (coord.DoneResult, map[string]string) {
+		t.Helper()
+		s, _ := open(t)
+		fake := &fakeLauncher{}
+		dev := add(t, s, "p")
+		review := addReview(t, s, "p", dev.Tid)
+
+		devSid, revSid := "s-dev", "s-rev"
+		if devKind != "" {
+			started, err := coord.Dispatch(s, coord.DispatchInput{
+				NoWait: true, Project: "p", Task: dev.Tid, Kind: devKind, Dir: t.TempDir(),
+			}, fake)
+			if err != nil {
+				t.Fatalf("dispatch the developer as %s: %v", devKind, err)
+			}
+			devSid = started.Session
+		}
+		claim(t, s, "p", devSid, dev.Tid)
+		devDone(t, s, "p", devSid, dev.Tid)
+
+		if reviewKind != "" {
+			started, err := coord.Dispatch(s, coord.DispatchInput{
+				NoWait: true, Project: "p", Task: review.Tid, Kind: reviewKind, Dir: t.TempDir(),
+			}, fake)
+			if err != nil {
+				t.Fatalf("dispatch the reviewer as %s: %v", reviewKind, err)
+			}
+			revSid = started.Session
+		}
+		claim(t, s, "p", revSid, review.Tid)
+		runCheck(t, s, "p", revSid, review.Tid, dev.Checks[0], 0)
+
+		got, err := coord.Done(s, coord.DoneInput{Project: "p", Session: revSid, Task: review.Tid, Dir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("done: %v", err)
+		}
+		notes := map[string]string{}
+		for _, tid := range []string{dev.Tid, review.Tid} {
+			for _, ev := range eventRows(t, s, "p", tid) {
+				if ev["state"] == "closed" {
+					notes[tid], _ = ev["note"].(string)
+				}
+			}
+		}
+		return got, notes
+	}
+
+	t.Run("same kind closes with an advisory", func(t *testing.T) {
+		got, notes := round(t, "pi", "pi")
+		if got.DevKind != "pi" || got.ReviewKind != "pi" {
+			t.Fatalf("kinds = %q/%q, want pi/pi", got.DevKind, got.ReviewKind)
+		}
+		if !strings.Contains(got.Warning, "advisory") || !strings.Contains(got.Warning, "pi") {
+			t.Fatalf("warning = %q, want the same-kind advisory naming pi", got.Warning)
+		}
+		if len(notes) != 2 {
+			t.Fatalf("close notes = %v, want one per closed task", notes)
+		}
+		for tid, note := range notes {
+			for _, want := range []string{"developer kind pi", "reviewer kind pi", "advisory"} {
+				if !strings.Contains(note, want) {
+					t.Fatalf("close note on %s = %q, want %q on the record", tid, note, want)
+				}
+			}
+		}
+	})
+
+	t.Run("different kinds close without a word", func(t *testing.T) {
+		got, notes := round(t, "pi", "claude")
+		if got.DevKind != "pi" || got.ReviewKind != "claude" {
+			t.Fatalf("kinds = %q/%q, want pi/claude", got.DevKind, got.ReviewKind)
+		}
+		if got.Warning != "" {
+			t.Fatalf("warning = %q, want none when the kinds differ", got.Warning)
+		}
+		for tid, note := range notes {
+			if strings.Contains(note, "advisory") {
+				t.Fatalf("close note on %s = %q, want no advisory for different kinds", tid, note)
+			}
+			if !strings.Contains(note, "developer kind pi") || !strings.Contains(note, "reviewer kind claude") {
+				t.Fatalf("close note on %s = %q, want both kinds recorded", tid, note)
+			}
+		}
+	})
+
+	// Either side missing is one fact missing, and fs never invents one.
+	for _, tc := range []struct {
+		name                string
+		devKind, reviewKind string
+	}{
+		{"both hand-run", "", ""},
+		{"developer hand-run", "", "pi"},
+		{"reviewer hand-run", "pi", ""},
+	} {
+		t.Run(tc.name+" says nothing about kinds", func(t *testing.T) {
+			got, notes := round(t, tc.devKind, tc.reviewKind)
+			if got.DevKind != "" || got.ReviewKind != "" || got.Warning != "" {
+				t.Fatalf("close = %+v, want no kinds and no warning", got)
+			}
+			if len(notes) != 2 {
+				t.Fatalf("close notes = %v, want one per closed task", notes)
+			}
+			for tid, note := range notes {
+				if strings.Contains(note, "kind") || strings.Contains(note, "advisory") {
+					t.Fatalf("close note on %s = %q, want no kind named when one is unrecorded", tid, note)
+				}
+			}
+		})
+	}
+}
+
 // eventRows is one task's report rows with their extras decoded, oldest first: what
 // a reader measuring a round works from, without going through status.
 func eventRows(t *testing.T, s *memory.Store, project, tid string) []map[string]any {
